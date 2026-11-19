@@ -1,0 +1,26 @@
+# One-click setup for Render (render.com). See DEPLOY.md.
+services:
+  - type: web
+    name: medr
+    runtime: docker
+    plan: starter            # a paid plan is needed for the disk that keeps accounts and projects
+    healthCheckPath: /api/version
+    disk:
+      name: medr-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # Render asks you for it; it is never stored in this file
+      - key: MEDR_ADMIN_EMAIL
+        sync: false
+      - key: MEDR_INVITE_CODE
+        sync: false
+      - key: NCBI_API_KEY
+        sync: false
+      - key: MEDR_DAILY_RUNS
+        value: "12"
+      - key: MEDR_DAILY_ACTIONS
+        value: "150"
+      - key: MEDR_GLOBAL_DAILY_RUNS
+        value: "150"

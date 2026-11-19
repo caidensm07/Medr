@@ -1,0 +1,8 @@
+**/__pycache__
+server/data
+logs
+*.bat
+*.command
+*.pyw
+check_key.py
+HOW TO SET UP.txt
