@@ -5,7 +5,8 @@ const app = $("#app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ago = t => { const s = Date.now() / 1000 - t; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; };
 let ME = { hosted: false };
-let READONLY = false;            // admin looking at someone else's project      // hosted mode: { hosted, user, usage }
+let READONLY = false;
+let PID_NOW = null;             // project being viewed            // admin looking at someone else's project      // hosted mode: { hosted, user, usage }
 const fmt = n => n == null ? "–" : Number(n).toLocaleString();
 
 function toast(msg, err) {
@@ -185,15 +186,18 @@ async function startProject() {
 const SECTIONS = [
   ["home", "Home", "overview", [["overview", "Overview"], ["activity", "Activity"]]],
   ["discover", "Discover", "discover", [["discover", "Connection map"]]],
-  ["ideas", "Ideas", "ideas", [["ideas", "Idea Lab"], ["board", "Pipeline"], ["explore", "Explore"]]],
-  ["plans", "Plans", "plans", [["plans", "Plans"]]],
-  ["research", "Research", "search", [["search", "Search"], ["saved", "Library"], ["trials", "Trials"], ["ask", "Ask"]]],
+  ["ideas", "Develop", "ideas", [["ideas", "Idea Lab"], ["board", "Pipeline"]]],
+  ["plans", "Plan", "plans", [["plans", "Plans"]]],
+  ["research", "Research", "search", [["search", "Search"], ["measures", "Assessments"], ["trials", "Trials"], ["ask", "Ask"], ["explore", "More tools"]]],
+  ["saved", "Saved", "saved", [["saved", "Library"], ["notes", "Notes"]]],
   ["news", "News", "news", [["news", "Top news"], ["alerts", "Alerts"], ["watch", "Tracked topics"]]],
-  ["notes", "Notes", "notes", [["notes", "Notes"]]],
 ];
-const EXPLORE = { measures: "Assessment Finder", radar: "Trends", bridge: "Connections", brief: "Evidence brief", gaps: "Opportunities" };
-const sectionOf = tab => SECTIONS.find(s => s[3].some(t => t[0] === tab)) || (EXPLORE[tab] ? SECTIONS.find(s => s[0] === "ideas") : null);
-const TITLE = { ...Object.fromEntries(SECTIONS.flatMap(s => s[3])), ...EXPLORE, settings: "Project settings" };
+const PATH = ["discover", "ideas", "plans"];            // the breakthrough path, in order
+const SECTION_DESC = { home: "This project at a glance", discover: "Find links nobody has tested", ideas: "Grade and sharpen an idea",
+  plans: "Work through it step by step", research: "Papers, trials, assessments", saved: "What you kept", news: "What's new, and alerts" };
+const EXPLORE = { radar: "Trends", bridge: "Connections", brief: "Evidence brief", gaps: "Opportunities" };
+const sectionOf = tab => SECTIONS.find(s => s[3].some(t => t[0] === tab)) || (EXPLORE[tab] ? SECTIONS.find(s => s[0] === "research") : null);
+const TITLE = { ...Object.fromEntries(SECTIONS.flatMap(s => s[3])), ...EXPLORE, measures: "Assessment Finder", settings: "Project settings" };
 const KIND_LABEL = { discover: "Connection map", measures: "Assessment Finder", news: "News", plan: "Research plan", ideas: "Idea Lab", radar: "Trends", bridge: "Connections", gaps: "Opportunities",
   brief: "Evidence brief", digest: "Monitor", note: "Note", idea: "Idea in progress", paper: "Paper", preprint: "Preprint", trial: "Trial" };
 
@@ -203,7 +207,8 @@ function planTeaser(mdText) {
 }
 function navCounts(p) {
   const st = p.stats || {};
-  return { ideas: st.idea || undefined, plans: st.plan || undefined, notes: st.note || undefined, news: ALERTS?.unread || undefined };
+  const kept = (st.paper || 0) + (st.preprint || 0) + (st.trial || 0) + (st.note || 0);
+  return { ideas: st.idea || undefined, plans: st.plan || undefined, saved: kept || undefined, news: ALERTS?.unread || undefined };
 }
 function sidebar(pid, tab, p) {
   const counts = navCounts(p), deco = THEMES ? themeVals(THEME).deco || "" : "";
@@ -216,8 +221,8 @@ function sidebar(pid, tab, p) {
           <span>${esc(x.name)}</span>${x.id === pid ? IC.check : `<small>${x.items}</small>`}</button>`).join("")}
         <div class="sw-sep"></div><button class="sw-item" id="sw-new">+ New project</button><a class="sw-item" href="#/">All projects</a></div>
     </div>
-    <nav class="nav">${SECTIONS.map(([k, label, first, tabs]) => { const on = sectionOf(tab)?.[0] === k;
-      return `<a class="nav-i ${on ? "on" : ""}" href="#/p/${pid}/${first}" data-nav="${k}">${IC[{ home: "overview", research: "search" }[k] || k]}<span>${label}</span>${counts[k] ? `<i class="${k === "news" ? "hot" : ""}">${counts[k]}</i>` : ""}</a>`; }).join("")}
+    <nav class="nav">${SECTIONS.map(([k, label, first]) => { const on = sectionOf(tab)?.[0] === k, step = PATH.indexOf(k);
+      return `${k === "research" ? `<div class="nav-sep" aria-hidden="true"></div>` : ""}<a class="nav-i ${on ? "on" : ""} ${step >= 0 ? "stepi" : ""}" href="#/p/${pid}/${first}" data-nav="${k}">${step >= 0 ? `<span class="nstep">${step + 1}</span>` : IC[{ home: "overview", research: "search" }[k] || k]}<span class="nl"><span>${label}</span><small>${SECTION_DESC[k]}</small></span>${counts[k] ? `<i class="${k === "news" ? "hot" : ""}">${counts[k]}</i>` : ""}</a>`; }).join("")}
     </nav>
     <div class="side-foot"><a class="nav-i ${tab === "settings" ? "on" : ""}" href="#/p/${pid}/settings">${IC.settings}<span>Settings</span></a>
       <button class="nav-i" id="themeb"><i class="th-dot" aria-hidden="true"></i><span>Theme</span></button>
@@ -270,17 +275,18 @@ function projectsView(lastPid) {
       ${ME.hosted ? `<button class="btn link small" id="fbb2">Send feedback</button>${ME.user?.admin ? `<a class="btn link small" href="#/admin">Admin</a>` : ""}<button class="btn link small" id="out2">Sign out</button>` : ""}
       <button class="btn ghost small" id="themeb2">Theme</button></header>
     <div class="wrap home-wrap">
-      <section class="intro">
-        <h1>The research behind better care, in minutes.</h1>
-        <p class="lede">Medr is a research aid for clinicians and care teams. Describe a patient group or a question, and it finds the validated assessments, the latest evidence and new approaches, in plain language with every source linked. It works alongside the tools your team already uses; it doesn't replace them.</p>
-        <ul class="trust"><li>Public research only: PubMed, ClinicalTrials.gov, preprints</li><li>Never uses patient data</li><li>Every result graded and sourced</li></ul>
-        <ol class="how3">
-          <li><b>Create a project</b><span>One per patient group or challenge you care about, e.g. "teens with type 1 diabetes and depression". Everything you find is saved there.</span></li>
-          <li><b>Pick a task</b><span>Map unexplored connections, choose assessments for the group, see what the research says, or put forward your own idea and develop it into a plan.</span></li>
-          <li><b>Use the results</b><span>Each answer is graded A to D on evidence, cites its sources, and can be turned into a step-by-step plan.</span></li>
-        </ol>
+      <section class="intro start">
+        <h1>What do you want to solve?</h1>
+        <p class="lede">Describe a health problem. Medr maps what drives it, counts the research behind every connection and shows you which approaches nobody has tested yet.</p>
+        <form class="startbox" id="sb"><input class="grow" type="text" name="goal" required placeholder="e.g. anxiety in young teens" aria-label="Health problem to solve">
+          <button class="btn">Map connections</button></form>
+        <p class="ex-row start-ex">${["anxiety in young teens", "early detection of Alzheimer's", "burnout in ICU nurses", "depression after a heart attack"].map(e => `<button type="button" class="ex" data-sx="${e}">${e}</button>`).join("")}</p>
+        <ol class="steps3">
+          <li><b>Discover</b><span>Find approaches the research says should work, but nobody has tested.</span></li>
+          <li><b>Develop</b><span>Check an idea against the evidence and get it graded A to D.</span></li>
+          <li><b>Plan</b><span>Work through your best idea one task at a time.</span></li></ol>
       </section>
-      <h2 class="ph2">${first ? "Create your first project" : "Choose a project"}</h2>
+      <h2 class="ph2">${first ? "Or set up a project yourself" : "Your projects"}</h2>
       <div class="pgrid">${sorted.map(p => `<a class="pcard ${p.id === lastPid ? "last" : ""}" href="#/p/${p.id}/overview">
           ${p.id === lastPid ? `<span class="pc-tag">Last opened</span>` : ""}<div class="nm">${esc(p.name)}</div>
           ${p.goal ? `<div class="goal">${esc(p.goal)}</div>` : `<div class="goal muted">No goal set yet</div>`}
@@ -297,6 +303,14 @@ function projectsView(lastPid) {
   $("#themeb2").onclick = themePicker;
   if (ME.hosted) { $("#fbb2").onclick = feedbackDialog; $("#out2").onclick = signOut; }
   $$("#np .ex").forEach(b => b.onclick = () => { $("#npn").value = b.dataset.ex; $("#npn").focus(); });
+  $$("[data-sx]").forEach(b => b.onclick = () => { $("#sb [name=goal]").value = b.dataset.sx; $("#sb").requestSubmit(); });
+  $("#sb").onsubmit = e => { e.preventDefault(); const goal = e.target.goal.value.trim(); if (!goal) return;
+    busy($("#sb .btn"), "Starting…", async () => {
+      const name = goal.charAt(0).toUpperCase() + goal.slice(1);
+      const existing = PROJECTS.find(x => x.name.toLowerCase() === name.toLowerCase());
+      const id = existing ? existing.id : (await api("/api/projects", { json: { name, goal: "" } })).id;
+      location.hash = `#/p/${id}/discover?run=${encodeURIComponent(JSON.stringify({ goal }))}`;
+    }); };
   $("#np").onsubmit = e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     busy($("#np .btn"), "Creating…", async () => { const r = await api("/api/projects", { json: f }); rememberProject(r.id); location.hash = `#/p/${r.id}/overview`; }); };
   $("#rf").onchange = async e => {
@@ -309,7 +323,7 @@ function projectsView(lastPid) {
 // ---------------- project shell ----------------
 async function projectView(pid, tab, params = new URLSearchParams()) {
   const [p] = await Promise.all([api(`/api/projects/${pid}`), refreshAlerts()]);
-  READONLY = !!p.read_only;
+  READONLY = !!p.read_only; PID_NOW = pid;
   if (!READONLY) rememberProject(pid);
   app.innerHTML = `<div class="shell">${sidebar(pid, tab, p)}
     <main class="main"><header class="pagehead"><div class="grow"><div class="crumb">${esc(p.name)}</div><h1>${tab === "settings" ? "Project settings" : sectionOf(tab)?.[1] || "Home"}</h1></div>
@@ -327,12 +341,10 @@ function subtabs(pid, tab) {
   const sec = sectionOf(tab); if (!sec || sec[3].length < 2) return "";
   const cur = EXPLORE[tab] ? "explore" : tab;
   return `<nav class="subtabs" aria-label="${esc(sec[1])}">${sec[3].map(([k, l]) => `<a href="#/p/${pid}/${k}" class="${k === cur ? "on" : ""}">${l}${k === "alerts" && ALERTS?.unread ? ` <i>${ALERTS.unread}</i>` : ""}</a>`).join("")}</nav>
-    ${EXPLORE[tab] ? `<a class="back-link" href="#/p/${pid}/explore">← All explore tools</a>` : ""}`;
+    ${EXPLORE[tab] ? `<a class="back-link" href="#/p/${pid}/explore">Back to more tools</a>` : ""}`;
 }
 function exploreTab(pane, pid) {
-  const tools = [["measures", "Assessment Finder", "Validated questionnaires and rating scales for a patient group, graded on evidence, with cutoffs and gaps."],
-    ["radar", "Trends", "What's taking off in a field right now, and what's quietly rising."],
-    ["bridge", "Connections", "Hidden links between two topics that researchers haven't connected yet."],
+  const tools = [["radar", "Trends", "What's taking off in a field right now, and what's quietly rising."],
     ["brief", "Evidence brief", "Where the evidence stands on a question, in plain words."],
     ["gaps", "Opportunities", "Open questions in a topic, and where AI could help answer them."]];
   pane.innerHTML = `<p class="sub" style="margin-top:0">Other ways to look at a topic. Each one saves its results to this project.</p>
@@ -963,47 +975,40 @@ const TASKS = [
 const STAGE_NAMES = { lead: "Lead", investigating: "Investigating", testing: "Testing", parked: "Parked" };
 
 function overviewTab(pane, pid, p) {
-  const st = p.stats || {}, items = p.items, ideas = items.filter(i => i.kind === "idea");
-  const plan = items.find(i => i.kind === "plan" && i.data.mission) || items.find(i => i.kind === "plan"), lastRun = items.find(i => i.kind === "ideas");
-  const mis = plan?.data?.mission, cur = mis?.steps?.[mis.steps.length - 1];
-  const steps = [
-    ["Run Idea Lab on your topic", !!st.ideas, "ideas", "Medr reads the research on your topic and proposes new ideas, each checked against real data."],
-    ["Write a breakthrough plan", !!st.plan, lastRun ? "ideas" : "ideas", "Turn your best Idea Lab leads into a plan. Press Draft research plan under your Idea Lab results."],
-    ["Begin the plan's first task", !!mis, "plans", "Select a lead; Medr issues one task at a time with method and completion criteria."],
-    ["Build a solution from your best idea", !!st.idea, "ideas", "Select Build a solution on an idea. Medr moves it into Plans and issues the first task."],
-  ];
-  const nextSetup = steps.find(x => !x[1]), done = steps.filter(x => x[1]).length;
-  const unread = (ALERTS?.alerts || []).filter(a => a.project_id === pid && !a.read);
-  const hero = cur ? `<section class="hero"><small>Current task${mis.lead ? ` · ${esc(mis.lead)}` : ""}</small>
-        <h2>${esc(cur.title)}</h2><p>${esc(cur.done_when || cur.why || "")}</p>
-        <div class="row"><a class="btn" href="#/p/${pid}/plans">Open task</a><span class="muted small">${(mis.steps || []).filter(x => x.status === "done").length} tasks completed${cur.time ? ` · est. ${esc(cur.time)}` : ""}</span></div></section>`
-    : "";
+  const items = p.items, maps = items.filter(i => i.kind === "discover"), runs = items.filter(i => i.kind === "ideas"), kept = items.filter(i => i.kind === "idea");
+  const plan = items.find(i => i.kind === "plan" && i.data.mission), mis = plan?.data?.mission, cur = mis?.steps?.[mis.steps.length - 1];
+  const map = maps[0], leads = map ? map.data.approaches.filter(c => c.status === "lead") : [];
+  const status = {
+    discover: map ? `Last map: <a href="#/p/${pid}/discover">${esc(map.data.goal)}</a>, ${leads.length} unexplored link${leads.length === 1 ? "" : "s"}${leads[0] ? `, led by <b>${esc(leads[0].name)}</b>` : ""}.` : "Not started.",
+    ideas: runs.length || kept.length ? `${runs.length} idea check${runs.length === 1 ? "" : "s"} run, ${kept.length} idea${kept.length === 1 ? "" : "s"} in your <a href="#/p/${pid}/board">pipeline</a>.` : "Not started. Bring a lead from Discover, or your own idea.",
+    plans: cur ? `Current task: <a href="#/p/${pid}/plans"><b>${esc(cur.title)}</b></a>${cur.time ? `, about ${esc(cur.time)}` : ""}.` : "No plan yet. In Develop, choose Build a solution on an idea.",
+  };
+  const step = (k, n, title, what, input) => `<li class="pstep ps-${k}"><span class="pnum">${n}</span><div class="pbody">
+      <h3>${title}</h3><p class="pwhat">${what}</p>${input || ""}<p class="pstat">${status[k]}</p></div></li>`;
   pane.innerHTML = `
     <div class="goalline"><span class="muted">Goal:</span> ${esc(p.goal) || `<span class="muted">not set yet</span>`} <a class="btn link small" href="#/p/${pid}/settings">Edit</a></div>
-    ${hero}
-    <h2 class="tasks-h">What do you need?</h2>
-    <div class="tasks">${TASKS.map(([k, t, d, ph]) => `<form class="task" data-task="${k}"><b>${t}</b><span>${d}</span>
-      ${ph ? `<div class="row"><input class="grow" type="text" name="q" required placeholder="${esc(ph)}" value="${k === "measures" ? esc(p.name) : ""}" aria-label="${t}">
-        <button class="btn small">Go</button></div>` : `<div class="row"><a class="btn ghost small" href="#/p/${pid}/news">Open News</a><a class="btn link small" href="#/p/${pid}/alerts">Alerts</a></div>`}</form>`).join("")}</div>
-    <div class="ov-grid"><div class="stack">
-      <section class="card"><div class="card-h"><h2>Alerts</h2><a class="btn link small" href="#/p/${pid}/alerts">${unread.length ? "See all" : "Open"}</a></div>
-        ${unread.length ? unread.slice(0, 3).map(a => `<div class="mini-alert ${a.level}"><span>${a.level === "breakthrough" ? "Possible breakthrough" : "Notable"}</span><b>${esc(a.title)}</b></div>`).join("")
-          : `<p class="muted">Nothing new. Medr keeps checking your topics for breakthroughs in the background.</p>`}</section>
-      <section class="card"><div class="card-h"><h2>Ideas in progress</h2><a class="btn link small" href="#/p/${pid}/board">${ideas.length ? "Open" : ""}</a></div>
-        ${ideas.length ? `<div class="mini-ideas">${ideas.slice(0, 4).map(i => `<div class="mini"><span class="pill st-${i.stage || "lead"}">${STAGE_NAMES[i.stage || "lead"]}</span>
-          <b>${esc(i.title)}</b></div>`).join("")}</div>`
-          : `<p class="muted">Ideas you build solutions for (or save for later) show up here.</p>`}</section>
-    </div><div class="stack">
-      <section class="card"><div class="card-h"><h2>Recent activity</h2><a class="btn link small" href="#/p/${pid}/activity">All</a></div>
-        ${p.events.length ? `<ul class="feed-mini">${p.events.slice(0, 6).map(e => `<li><span>${esc(e.text)}</span><time>${ago(e.created)}</time></li>`).join("")}</ul>`
-          : `<p class="muted">Everything you do in this project shows up here.</p>`}</section>
-    </div></div>`;
-  $$(".task[data-task]", pane).forEach(f => f.onsubmit = e => { e.preventDefault(); const t = f.dataset.task, v = f.q.value.trim();
-    const run = t === "discover" ? { goal: v } : t === "ideas" ? { condition: v, angle: "any" } : t === "search" ? { q: v, mode: "papers" } : t === "measures" ? { population: v, purpose: "both" } : { topic: v };
+    <h2 class="tasks-h">The path to a breakthrough</h2>
+    <ol class="ppath">
+      ${step("discover", 1, "Discover", "Find approaches that research says should work for a problem, but nobody has tested for it yet. Every link is a real PubMed count.",
+        `<form class="row pform" data-go="discover"><input class="grow" type="text" name="q" required placeholder="A problem, e.g. anxiety in young teens" aria-label="Problem to map"><button class="btn small">Map connections</button></form>`)}
+      ${step("ideas", 2, "Develop", "Put an idea forward. Medr checks it against the evidence, grades it A to D, and suggests stronger variations.",
+        `<form class="row pform" data-go="ideas"><input class="grow" type="text" name="q" required placeholder="Your idea, e.g. bright light therapy for teen anxiety" aria-label="Idea to develop"><button class="btn small">Check idea</button></form>`)}
+      ${step("plans", 3, "Plan", "Turn your best idea into a plan. Medr gives you one task at a time, with how to do it and when it's done.",
+        `<div class="row"><a class="btn small ${cur ? "" : "ghost"}" href="#/p/${pid}/plans">${cur ? "Open current task" : "Open plans"}</a></div>`)}
+    </ol>
+    <h2 class="tasks-h">Other tools</h2>
+    <ul class="otools">
+      <li><a href="#/p/${pid}/search"><b>Search the research</b></a><span>Papers, preprints and trials on any question, summarized and ranked.</span></li>
+      <li><a href="#/p/${pid}/measures"><b>Choose assessments</b></a><span>Validated questionnaires for a patient group, graded, with cutoffs.</span></li>
+      <li><a href="#/p/${pid}/news"><b>News and alerts</b></a><span>Major research news, and alerts when something big lands on your topics.</span></li>
+    </ul>
+    ${p.events.length ? `<h2 class="tasks-h">Recent activity <a class="btn link small" href="#/p/${pid}/activity">All</a></h2>
+      <ul class="feed-mini">${p.events.slice(0, 5).map(e => `<li><span>${esc(e.text)}</span><time>${ago(e.created)}</time></li>`).join("")}</ul>` : ""}`;
+  $$(".pform", pane).forEach(f => f.onsubmit = e => { e.preventDefault(); const v = f.q.value.trim(), t = f.dataset.go;
+    const run = t === "discover" ? { goal: v } : { condition: v, angle: "any" };
     location.hash = `#/p/${pid}/${t}?run=${encodeURIComponent(JSON.stringify(run))}`; });
 }
 
-// ---------------- Board ----------------
 function boardTab(pane, pid, p) {
   const ideas = p.items.filter(i => i.kind === "idea");
   const order = Object.keys(STAGE_NAMES);
@@ -1494,11 +1499,12 @@ function discoverRender(i) {
         ${c.why ? `<p>${esc(c.why)}</p>` : `<p>${esc(c.plain || "")}</p>`}
         ${pathLine(c)}
         <p class="dnote">Only ${num(c.ac, `(${A.query}) AND (${c.query})`)} paper${c.ac === 1 ? "" : "s"} study it for ${esc(A.name.toLowerCase())} directly${d.as_of && c.after != null ? `, and ${fmt(c.after)} more have appeared since ${d.as_of}` : ""}.</p>
+        <div class="row dact"><a class="btn small" href="#/p/${PID_NOW}/ideas?run=${encodeURIComponent(JSON.stringify({ condition: `${c.name} for ${A.name.toLowerCase()}${c.paths[0] ? `, by acting on ${c.paths[0].via.toLowerCase()}` : ""}`, angle: "any" }))}">Develop this idea</a></div>
         ${c.test || c.caution ? `<details class="howit"><summary>How to check it</summary>${c.test ? `<p><b>First study:</b> ${esc(c.test)}</p>` : ""}${c.caution ? `<p><b>Why it might not work:</b> ${esc(c.caution)}</p>` : ""}</details>` : ""}
       </article>`).join("") : `<p class="muted">No unexplored links this time. The approaches Medr found are either already studied or too weakly connected. Try a narrower problem.</p>`}
-    ${studied.length ? `<h4 class="dh">Already being studied <span class="muted">${studied.length}</span></h4>
+    ${studied.length ? `<details class="howit dstud"><summary>Already being studied (${studied.length})</summary>
       <table class="dtab"><tbody>${studied.map(c => `<tr data-node="c:${esc(c.name)}"><td><b>${esc(c.name)}</b> <span class="muted small">${esc(c.kind || "")}</span></td>
-        <td>${DSTATUS[c.status][0]}</td><td class="num">${num(c.ac, `(${A.query}) AND (${c.query})`)} papers</td></tr>`).join("")}</tbody></table>` : ""}
+        <td>${DSTATUS[c.status][0]}</td><td class="num">${num(c.ac, `(${A.query}) AND (${c.query})`)} papers</td></tr>`).join("")}</tbody></table></details>` : ""}
     ${weak.length ? `<details class="howit"><summary>No clear link (${weak.length})</summary><p class="muted small">${weak.map(c => esc(c.name)).join(", ")}. Too few papers connect these to ${esc(A.name.toLowerCase())} or its drivers.</p></details>` : ""}
     <details class="howit"><summary>How to read this</summary><p>Each number is a real count of PubMed papers that mention both things. Click any number to open those papers.
       A link counts as strong at ${d.thresholds.strong}+ papers, moderate at ${d.thresholds.moderate}+. An unexplored link is an approach with a moderate or strong path through a driver, but fewer than ${d.thresholds.moderate} papers testing it for the problem directly.
@@ -1585,22 +1591,21 @@ function landingView() {
       </section>
 
       <section class="l-what">
-        <h2>What you can do with it</h2>
-        <div class="l-grid">
-          <div><h3>Find unexplored connections</h3><p>Medr names the drivers of a problem and the existing treatments, devices and digital tools that act on them, then flags the ones strongly connected but barely studied for your problem.</p></div>
-          <div><h3>Check it against the past</h3><p>The time machine runs a map using only research up to an earlier year, then shows which flagged links the field went on to study.</p></div>
-          <div><h3>Choose validated assessments</h3><p>Pick the right questionnaires for a patient group, with how well each is validated, its cutoffs and where it falls short.</p></div>
-          <div><h3>Turn an idea into a plan</h3><p>Put an idea forward. Medr grades it against the evidence, suggests stronger variations and walks you through it one task at a time.</p></div>
-        </div>
+        <h2>How it works</h2>
+        <ol class="steps3 big">
+          <li><b>Discover</b><span>Medr names what drives a health problem and the existing treatments, devices and digital tools that act on those drivers. It flags the ones strongly connected but barely tested for your problem. A time machine checks the method against the past.</span></li>
+          <li><b>Develop</b><span>Bring a lead or your own idea. Medr checks it against the published evidence, grades it from A (strong evidence) to D (original idea) and suggests stronger variations.</span></li>
+          <li><b>Plan</b><span>Turn the best idea into a plan. Medr gives you one task at a time, with how to do it and how you'll know it's done.</span></li>
+        </ol>
+        <p class="muted">Also inside: research search, validated assessment finder, and news and alerts for your topics.</p>
       </section>
 
       <section class="l-trust">
         <h2>Built to be checked</h2>
         <ul>
-          <li><b>Public research only.</b> PubMed, ClinicalTrials.gov and preprints. Medr never asks for patient data.</li>
-          <li><b>Every claim has a source.</b> Counts link to the papers behind them, and findings are graded from strong evidence to original idea.</li>
-          <li><b>Plain language first.</b> Each answer starts in words anyone can follow, then goes technical.</li>
-          <li><b>A research aid, not medical advice.</b> Leads are hypotheses to test, not conclusions.</li>
+          <li><b>Public research only.</b> PubMed, ClinicalTrials.gov and preprints. No patient data.</li>
+          <li><b>Every number links to its papers.</b> Click through and check it yourself.</li>
+          <li><b>Leads, not conclusions.</b> Medr shows where to look. It's a research aid, not medical advice.</li>
         </ul>
       </section>
 
