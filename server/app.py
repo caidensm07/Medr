@@ -246,7 +246,7 @@ class ProjectIn(BaseModel):
 
 def need_project(pid):
     p = q("SELECT * FROM projects WHERE id = ?", (pid,), one=True)
-    if not p or (uid() is not None and p.get("user_id") != uid()):
+    if not p or (uid() is not None and p.get("user_id") != uid() and not hosted.admin_read()):
         raise HTTPException(404, "Project not found")
     return p
 
@@ -298,6 +298,9 @@ def get_project(pid: int):
         counts[it["kind"]] = counts.get(it["kind"], 0) + 1
     p["stats"] = counts
     p["events"] = q("SELECT kind, text, ref, created FROM events WHERE project_id = ? ORDER BY id DESC LIMIT 60", (pid,))
+    if hosted.admin_read():
+        p["owner_email"] = (q("SELECT email FROM users WHERE id = ?", (p.get("user_id"),), one=True) or {}).get("email", "")
+        p["read_only"] = True
     return p
 
 

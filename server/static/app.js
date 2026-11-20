@@ -4,7 +4,8 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const app = $("#app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ago = t => { const s = Date.now() / 1000 - t; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; };
-let ME = { hosted: false };      // hosted mode: { hosted, user, usage }
+let ME = { hosted: false };
+let READONLY = false;            // admin looking at someone else's project      // hosted mode: { hosted, user, usage }
 const fmt = n => n == null ? "–" : Number(n).toLocaleString();
 
 function toast(msg, err) {
@@ -13,6 +14,7 @@ function toast(msg, err) {
 }
 async function api(path, { method, json } = {}) {
   const opt = { method: method || (json ? "POST" : "GET"), headers: { "X-Medr": "1" } };
+  if (READONLY && opt.method !== "GET" && !/^\/api\/(settings|feedback|auth)/.test(path)) throw new Error("View only. This is someone else's project.");
   if (json) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(json); }
   const r = await fetch(path, opt);
   let data = null; try { data = await r.json(); } catch (e) {}
@@ -247,12 +249,12 @@ async function route() {
   if (snow && !THEMES) stopSnow();
   const [path, qs] = (location.hash.slice(1) || "/").split("?");
   const parts = path.split("/").filter(Boolean), params = new URLSearchParams(qs || "");
-  document.onclick = null;
+  document.onclick = null; READONLY = false;
   try {
     if (ME.hosted) { ME = await api("/api/me"); if (!ME.user) return authView("in"); }
     if (parts[0] === "admin" && ME.user?.admin) return await adminView();
     await loadProjects();
-    if (parts[0] === "p" && PROJECTS.some(x => x.id === +parts[1])) return await projectView(+parts[1], parts[2] || "overview", params);
+    if (parts[0] === "p" && (PROJECTS.some(x => x.id === +parts[1]) || ME.user?.admin)) return await projectView(+parts[1], parts[2] || "overview", params);
     return projectsView(await startProject().catch(() => null));     // the app opens here
   } catch (e) { toast(e.message, true); }
 }
@@ -305,10 +307,12 @@ function projectsView(lastPid) {
 // ---------------- project shell ----------------
 async function projectView(pid, tab, params = new URLSearchParams()) {
   const [p] = await Promise.all([api(`/api/projects/${pid}`), refreshAlerts()]);
-  rememberProject(pid);
+  READONLY = !!p.read_only;
+  if (!READONLY) rememberProject(pid);
   app.innerHTML = `<div class="shell">${sidebar(pid, tab, p)}
     <main class="main"><header class="pagehead"><div class="grow"><div class="crumb">${esc(p.name)}</div><h1>${tab === "settings" ? "Project settings" : sectionOf(tab)?.[1] || "Home"}</h1></div>
-      <div class="ph-actions" id="pha"></div></header>${subtabs(pid, tab)}<div id="pane"></div></main></div>`;
+      <div class="ph-actions" id="pha"></div></header>
+      ${READONLY ? `<div class="ro-bar"><span>Viewing <b>${esc(p.owner_email)}</b>'s project. View only, nothing you click changes it.</span><a class="btn link small" href="#/admin">Back to Admin</a></div>` : ""}${subtabs(pid, tab)}<div id="pane"></div></main></div>`;
   bindShell(pid, tab);
   const views = { overview: overviewTab, board: boardTab, notes: notesTab, activity: activityTab, settings: settingsTab, trials: trialsTab,
     ideas: ideasTab, plans: plansTab, news: newsTab, alerts: alertsTab, explore: exploreTab, measures: measuresTab, radar: radarTab, bridge: bridgeTab, gaps: gapsTab, brief: briefTab, search: searchTab, watch: watchTab, ask: askTab, saved: savedTab };
@@ -1300,6 +1304,7 @@ function authView(mode = "in") {
         <div class="notice"><b>Before you start</b>
           <p>Medr only searches public research: PubMed, ClinicalTrials.gov and preprints. Don't enter patient names, records, dates of birth or anything else that could identify a person.</p>
           <p>Medr is a research aid, not medical advice. Check the linked sources before acting on anything.</p>
+          <p>During testing, Caiden can view projects to see how Medr is working and improve it.</p>
           <label class="check"><input type="checkbox" name="agree" required> I understand, and I won't enter patient information.</label></div>` : ""}
         <p class="auth-err" id="aerr" role="alert" hidden></p>
         <button class="btn" type="submit">${up ? "Create account" : "Sign in"}</button>
@@ -1410,13 +1415,26 @@ async function adminView() {
       <h2>People</h2>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Email</th><th>Field</th><th>Joined</th><th>Last seen</th><th>Projects</th><th>Uses this week</th><th></th></tr></thead>
         <tbody>${d.users.map(u => `<tr class="${u.disabled ? "off" : ""}"><td>${esc(u.email)}${u.name ? `<br><span class="muted small">${esc(u.name)}</span>` : ""}${u.admin ? ` <span class="muted small">admin</span>` : ""}</td>
-          <td>${esc(u.field || "")}</td><td>${day(u.created)}</td><td>${u.last_seen ? ago(u.last_seen) : "never"}</td><td>${u.projects}</td><td>${u.uses_week}</td>
+          <td>${esc(u.field || "")}</td><td>${day(u.created)}</td><td>${u.last_seen ? ago(u.last_seen) : "never"}</td><td>${u.projects ? `<button class="btn link small" data-projs="${u.id}">${u.projects} · view</button>` : "0"}</td><td>${u.uses_week}</td>
           <td class="nowrap"><button class="btn link small" data-reset="${u.id}" data-em="${esc(u.email)}">Reset password</button>${u.admin ? "" : `<button class="btn link small" data-off="${u.id}">${u.disabled ? "Turn on" : "Turn off"}</button>`}</td></tr>`).join("")}</tbody></table></div>
     </div></div>`;
+  $$("[data-projs]").forEach(b => b.onclick = () => userProjects(+b.dataset.projs));
   $$("[data-res]").forEach(b => b.onclick = async () => { await api(`/api/admin/feedback/${b.dataset.res}/resolve`, { method: "POST" }); adminView(); });
   $$("[data-off]").forEach(b => b.onclick = async () => { await api(`/api/admin/users/${b.dataset.off}/toggle`, { method: "POST" }); adminView(); });
   $$("[data-reset]").forEach(b => b.onclick = async () => {
     if (!confirm(`Reset the password for ${b.dataset.em}?`)) return;
     const r = await api(`/api/admin/users/${b.dataset.reset}/reset`, { method: "POST" });
     prompt(`Send this temporary password to ${b.dataset.em}. They can change it in Settings.`, r.temp_password); });
+}
+
+async function userProjects(id) {
+  const d = await api(`/api/admin/users/${id}/projects`);
+  const m = document.createElement("div"); m.className = "modal";
+  m.innerHTML = `<div class="panel up-panel"><div class="row"><h2 class="grow" style="margin:0">${esc(d.user.email)}</h2><button class="btn link small" data-close>Close</button></div>
+    <p class="hint" style="margin:4px 0 12px">Opens in view-only mode. You can't change anything in their projects.</p>
+    <ul class="up-list">${d.projects.map(p => `<li><a href="#/p/${p.id}/overview"><b>${esc(p.name)}</b></a>
+      <span class="muted small">${p.items} saved · last active ${p.last_activity ? ago(p.last_activity) : "never"}</span>
+      ${p.goal ? `<p class="muted small">${esc(p.goal)}</p>` : ""}</li>`).join("")}</ul></div>`;
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-close]") || e.target.closest("a")) m.remove(); };
+  document.body.append(m);
 }

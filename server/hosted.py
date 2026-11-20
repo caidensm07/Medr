@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 HOSTED = os.getenv("MEDR_HOSTED") == "1"
 _uid = contextvars.ContextVar("medr_uid", default=None)
+_admin_read = contextvars.ContextVar("medr_admin_read", default=False)   # admin viewing someone else's project
 COOKIE = "medr_session"
 SESSION_DAYS = 30
 
@@ -27,6 +28,11 @@ SESSION_DAYS = 30
 def uid():
     """The signed-in user's id in hosted mode; None on the desktop app (no filtering)."""
     return _uid.get() if HOSTED else None
+
+
+def admin_read():
+    """True while an admin is reading (GET only) a project they don't own."""
+    return HOSTED and _admin_read.get()
 
 
 def env_int(name, default):
@@ -168,10 +174,16 @@ def install(app, q, ex, db):
         if (any(re.match(p, path) for p in ADMIN_ONLY) or
                 (method != "GET" and any(re.match(p, path) for p in ADMIN_WRITES))) and not is_admin:
             return deny(403, "Admins only.")
+        reading_other = False
         for rx, kind in OWNED:
             m = rx.match(path)
-            if m and path != "/api/projects/restore" and owner_of(kind, int(m.group(1))) != user["id"]:
-                return deny(404, "Not found.")
+            if m and path != "/api/projects/restore":
+                owner = owner_of(kind, int(m.group(1)))
+                if owner != user["id"]:
+                    if is_admin and method == "GET" and owner is not None:
+                        reading_other = True          # admins can look, never change
+                    else:
+                        return deny(404, "Not found.")
         cls = usage_class(method, path)
         if cls and not is_admin:
             lim, u = limits(), used(user["id"])
@@ -186,12 +198,12 @@ def install(app, q, ex, db):
                 return deny(429, f"You've used today's {lim['actions']} searches. They reset at 7pm Eastern.")
         if time.time() - (user["last_seen"] or 0) > 300:
             ex("UPDATE users SET last_seen = ? WHERE id = ?", (time.time(), user["id"]))
-        tok = _uid.set(user["id"])
+        tok, rtok = _uid.set(user["id"]), _admin_read.set(reading_other)
         request.state.user = user
         try:
             resp = await call_next(request)
         finally:
-            _uid.reset(tok)
+            _uid.reset(tok); _admin_read.reset(rtok)
         if cls and resp.status_code < 400:
             ex("INSERT INTO usage(user_id, kind, path, day, created) VALUES (?,?,?,?,?)",
                (user["id"], cls, re.sub(r"\d+", "#", path), today(), time.time()))
@@ -288,7 +300,7 @@ def install(app, q, ex, db):
         if not u:
             return {"hosted": True, "user": None, "invite": bool(os.getenv("MEDR_INVITE_CODE"))}
         lim = limits()
-        return {"hosted": True, "user": {"email": u["email"], "name": u["name"], "field": u["field"], "admin": bool(u["admin"])},
+        return {"hosted": True, "user": {"id": u["id"], "email": u["email"], "name": u["name"], "field": u["field"], "admin": bool(u["admin"])},
                 "usage": {**used(u["id"]), "runs_cap": lim["runs"], "actions_cap": lim["actions"]}}
 
     class PwIn(BaseModel):
@@ -377,6 +389,17 @@ def install(app, q, ex, db):
         g = q("SELECT COUNT(*) AS n FROM usage WHERE day = ? AND kind = 'run'", (today(),), one=True)["n"]
         return {"total_users": len(users), "weeks": weeks, "users": users, "feedback": fb, "popular": popular,
                 "fields": fields, "today_runs": g, "limits": limits()}
+
+    @app.get("/api/admin/users/{user_id}/projects")
+    def admin_user_projects(user_id: int):
+        u = q("SELECT id, email, name FROM users WHERE id = ?", (user_id,), one=True)
+        if not u:
+            raise HTTPException(404, "No such user.")
+        projects = q("""SELECT p.id, p.name, p.goal, p.created,
+                          (SELECT COUNT(*) FROM items i WHERE i.project_id = p.id) AS items,
+                          (SELECT MAX(created) FROM events e WHERE e.project_id = p.id) AS last_activity
+                        FROM projects p WHERE p.user_id = ? ORDER BY p.created DESC""", (user_id,))
+        return {"user": u, "projects": projects}
 
     @app.post("/api/admin/feedback/{fid}/resolve")
     def admin_resolve(fid: int):

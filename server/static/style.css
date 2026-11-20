@@ -1091,3 +1091,11 @@ details.scores{margin:0 0 6px}
 .tbl tr.off td{opacity:.5}
 .nowrap{white-space:nowrap}
 @media (max-width:860px){.auth-wrap,.admin-cols{grid-template-columns:1fr;gap:28px}.auth-wrap{padding-top:32px}}
+.ro-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0;margin:-4px 0 14px;border-bottom:1px solid var(--line);font-size:.9rem;color:var(--muted)}
+.ro-bar b{color:var(--ink)}
+.ro-bar span{flex:1}
+.up-panel{width:min(560px,100%)}
+.up-list{list-style:none;padding:0;margin:0}
+.up-list li{padding:12px 0;border-top:1px solid var(--line)}
+.up-list li>span{display:block;margin-top:2px}
+.up-list p{margin:4px 0 0}
