@@ -69,7 +69,7 @@ def check_pw(pw, stored):
 
 # ---------------- usage classes ----------------
 # deep runs: the expensive, multi-step AI jobs
-RUN_PATHS = [r"^/api/projects/\d+/(ideas|plan|solution|measures|brief|gaps|radar|bridge)$", r"^/api/search/ideas$",
+RUN_PATHS = [r"^/api/projects/\d+/(ideas|plan|solution|measures|brief|gaps|radar|bridge|discover)$", r"^/api/search/ideas$",
              r"^/api/alerts/check$"]
 # actions: searches and single AI calls
 ACTION_PATHS = [r"^/api/search/(papers|preprints|trials|explain)$", r"^/api/projects/\d+/(ask|shortlist|trials/refresh)$",

@@ -138,6 +138,7 @@ const logo = `<svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-
   <circle cx="20" cy="36" r="5" style="fill:var(--eosin)"/></svg>`;
 // line icons for the tools
 const IC = {
+  discover: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="12" r="1.6"/><path d="M7.5 12h3M13.4 11l3.4-4.4M13.4 13l3.4 4.4"/></svg>`,
   feedback: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg>`,
   admin: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>`,
   measures: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M9 10h6M9 14h6M9 18h3"/></svg>`,
@@ -183,6 +184,7 @@ async function startProject() {
 // Six plain sections; related pages live inside each one as tabs.
 const SECTIONS = [
   ["home", "Home", "overview", [["overview", "Overview"], ["activity", "Activity"]]],
+  ["discover", "Discover", "discover", [["discover", "Connection map"]]],
   ["ideas", "Ideas", "ideas", [["ideas", "Idea Lab"], ["board", "Pipeline"], ["explore", "Explore"]]],
   ["plans", "Plans", "plans", [["plans", "Plans"]]],
   ["research", "Research", "search", [["search", "Search"], ["saved", "Library"], ["trials", "Trials"], ["ask", "Ask"]]],
@@ -190,9 +192,9 @@ const SECTIONS = [
   ["notes", "Notes", "notes", [["notes", "Notes"]]],
 ];
 const EXPLORE = { measures: "Assessment Finder", radar: "Trends", bridge: "Connections", brief: "Evidence brief", gaps: "Opportunities" };
-const sectionOf = tab => SECTIONS.find(s => s[3].some(t => t[0] === tab)) || (EXPLORE[tab] ? SECTIONS[1] : null);
+const sectionOf = tab => SECTIONS.find(s => s[3].some(t => t[0] === tab)) || (EXPLORE[tab] ? SECTIONS.find(s => s[0] === "ideas") : null);
 const TITLE = { ...Object.fromEntries(SECTIONS.flatMap(s => s[3])), ...EXPLORE, settings: "Project settings" };
-const KIND_LABEL = { measures: "Assessment Finder", news: "News", plan: "Research plan", ideas: "Idea Lab", radar: "Trends", bridge: "Connections", gaps: "Opportunities",
+const KIND_LABEL = { discover: "Connection map", measures: "Assessment Finder", news: "News", plan: "Research plan", ideas: "Idea Lab", radar: "Trends", bridge: "Connections", gaps: "Opportunities",
   brief: "Evidence brief", digest: "Monitor", note: "Note", idea: "Idea in progress", paper: "Paper", preprint: "Preprint", trial: "Trial" };
 
 function planTeaser(mdText) {
@@ -251,7 +253,7 @@ async function route() {
   const parts = path.split("/").filter(Boolean), params = new URLSearchParams(qs || "");
   document.onclick = null; READONLY = false;
   try {
-    if (ME.hosted) { ME = await api("/api/me"); if (!ME.user) return authView("in"); }
+    if (ME.hosted) { ME = await api("/api/me"); if (!ME.user) return loggedOut(); }
     if (parts[0] === "admin" && ME.user?.admin) return await adminView();
     await loadProjects();
     if (parts[0] === "p" && (PROJECTS.some(x => x.id === +parts[1]) || ME.user?.admin)) return await projectView(+parts[1], parts[2] || "overview", params);
@@ -274,7 +276,7 @@ function projectsView(lastPid) {
         <ul class="trust"><li>Public research only: PubMed, ClinicalTrials.gov, preprints</li><li>Never uses patient data</li><li>Every result graded and sourced</li></ul>
         <ol class="how3">
           <li><b>Create a project</b><span>One per patient group or challenge you care about, e.g. "teens with type 1 diabetes and depression". Everything you find is saved there.</span></li>
-          <li><b>Pick a task</b><span>Choose assessments for the group, see what the research says, or put forward your own idea and develop it into a plan.</span></li>
+          <li><b>Pick a task</b><span>Map unexplored connections, choose assessments for the group, see what the research says, or put forward your own idea and develop it into a plan.</span></li>
           <li><b>Use the results</b><span>Each answer is graded A to D on evidence, cites its sources, and can be turned into a step-by-step plan.</span></li>
         </ol>
       </section>
@@ -315,7 +317,7 @@ async function projectView(pid, tab, params = new URLSearchParams()) {
       ${READONLY ? `<div class="ro-bar"><span>Viewing <b>${esc(p.owner_email)}</b>'s project. View only, nothing you click changes it.</span><a class="btn link small" href="#/admin">Back to Admin</a></div>` : ""}${subtabs(pid, tab)}<div id="pane"></div></main></div>`;
   bindShell(pid, tab);
   const views = { overview: overviewTab, board: boardTab, notes: notesTab, activity: activityTab, settings: settingsTab, trials: trialsTab,
-    ideas: ideasTab, plans: plansTab, news: newsTab, alerts: alertsTab, explore: exploreTab, measures: measuresTab, radar: radarTab, bridge: bridgeTab, gaps: gapsTab, brief: briefTab, search: searchTab, watch: watchTab, ask: askTab, saved: savedTab };
+    discover: discoverTab, ideas: ideasTab, plans: plansTab, news: newsTab, alerts: alertsTab, explore: exploreTab, measures: measuresTab, radar: radarTab, bridge: bridgeTab, gaps: gapsTab, brief: briefTab, search: searchTab, watch: watchTab, ask: askTab, saved: savedTab };
   let run = null; try { run = params.get("run") ? JSON.parse(params.get("run")) : null; } catch (e) {}
   if (run) history.replaceState(null, "", `#/p/${pid}/${tab}`);     // don't re-run on refresh
   (views[tab] || overviewTab)($("#pane"), pid, p, run);
@@ -338,7 +340,7 @@ function exploreTab(pane, pid) {
 }
 
 // a runner = input + button + previous runs of one kind
-function runner(pane, { title, sub, how, examples, fields, button, wait, run, kind, items, render, legend, auto, mdFirst, printable, bindRun }) {
+function runner(pane, { title, sub, how, examples, fields, button, wait, run, kind, items, render, legend, auto, mdFirst, printable, bindRun, stages }) {
   pane.innerHTML = `<form class="runner"><h2>${title}</h2><p class="sub">${sub}</p>
     <div class="row">${fields}<button class="btn">${button}</button></div>
     <div class="formfoot">${examples ? `<span class="exlist"><span class="muted">Examples:</span> ${examples.map(e => `<button type="button" class="ex" data-ex='${esc(JSON.stringify(e))}'>${esc(e._label || Object.values(e).join(" × "))}</button>`).join("")}</span>` : ""}
@@ -368,12 +370,13 @@ function runner(pane, { title, sub, how, examples, fields, button, wait, run, ki
   $("form", pane).onsubmit = e => {
     e.preventDefault();
     const btn = $("form .btn", pane), work = $("#work", pane);
-    work.innerHTML = `<div class="working"><span class="pulse"></span>${wait}</div>`;
+    work.innerHTML = `<div class="working"><span class="pulse"></span><span class="wtxt">${wait}</span></div>`;
+    let si = 0, timer = stages ? setInterval(() => { const t = $(".wtxt", work); if (t && si < stages.length) t.textContent = stages[si++]; }, 7000) : null;
     busy(btn, "Working…", async () => {
       const item = await run(Object.fromEntries(new FormData(e.target)));
       list = [item, ...list]; draw(list);
       runs.firstElementChild?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }).finally(() => work.innerHTML = "");
+    }).finally(() => { if (timer) clearInterval(timer); work.innerHTML = ""; });
   };
   if (auto) {               // started from the hub: fill in and go
     for (const [k, x] of Object.entries(auto)) { const el = $(`[name="${k}"]`, pane); if (el) el.value = x; }
@@ -951,6 +954,7 @@ const LAUNCH = [["ideas", "Idea Lab", "Generate and score new treatment ideas"],
   ["brief", "Evidence brief", "Where the evidence stands"], ["gaps", "Opportunities", "Open questions and where AI could help"],
   ["measures", "Assessment Finder", "Validated questionnaires for a patient group"]];
 const TASKS = [
+  ["discover", "Find unexplored connections", "Map what drives a problem and which existing approaches link to it but were never tested for it. Every link is counted in PubMed.", "e.g. anxiety in young teens"],
   ["measures", "Choose assessments", "Validated questionnaires for a patient group, graded on evidence, with cutoffs.", "e.g. teens with type 1 diabetes and depression"],
   ["search", "See what the research says", "Studies on your question, summarized in plain words and ranked by relevance.", "e.g. does measurement-based care improve outcomes for teens?"],
   ["ideas", "Develop an idea", "Put your idea forward. Medr checks it against the research, sharpens it and suggests alternatives, each graded.", "Your idea, e.g. a peer-mentor app to lower diabetes distress in teens"],
@@ -995,7 +999,7 @@ function overviewTab(pane, pid, p) {
           : `<p class="muted">Everything you do in this project shows up here.</p>`}</section>
     </div></div>`;
   $$(".task[data-task]", pane).forEach(f => f.onsubmit = e => { e.preventDefault(); const t = f.dataset.task, v = f.q.value.trim();
-    const run = t === "ideas" ? { condition: v, angle: "any" } : t === "search" ? { q: v, mode: "papers" } : t === "measures" ? { population: v, purpose: "both" } : { topic: v };
+    const run = t === "discover" ? { goal: v } : t === "ideas" ? { condition: v, angle: "any" } : t === "search" ? { q: v, mode: "papers" } : t === "measures" ? { population: v, purpose: "both" } : { topic: v };
     location.hash = `#/p/${pid}/${t}?run=${encodeURIComponent(JSON.stringify(run))}`; });
 }
 
@@ -1275,7 +1279,7 @@ function newsTab(pane, pid, p) {
 async function boot() {
   try { const r = await fetch("/api/me"); if (r.ok) ME = await r.json(); } catch (e) {}
   await loadThemes();
-  if (ME.hosted && !ME.user) return authView(location.hash.includes("signup") ? "up" : "in");
+  if (ME.hosted && !ME.user) return loggedOut();
   route();
 }
 
@@ -1312,7 +1316,7 @@ function authView(mode = "in") {
       </form>
     </div></div>`;
   $("#themeb2").onclick = themePicker;
-  $$("[data-mode]").forEach(b => b.onclick = () => authView(b.dataset.mode));
+  $$("[data-mode]").forEach(b => b.onclick = () => { history.replaceState(null, "", b.dataset.mode === "up" ? "#/signup" : "#/signin"); authView(b.dataset.mode); });
   $("#af").onsubmit = e => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target)), err = $("#aerr");
@@ -1377,7 +1381,7 @@ function bindAccount() {
     busy($("#delf .btn"), "Deleting…", async () => { await api("/api/account/delete", { json: f }); ME.user = null; authView("up"); toast("Account deleted"); }); };
 }
 
-const FEATURE = { "/api/projects/#/ideas": "Idea Lab", "/api/projects/#/measures": "Assessment Finder", "/api/projects/#/plan": "Research plan",
+const FEATURE = { "/api/projects/#/discover": "Discover", "/api/projects/#/ideas": "Idea Lab", "/api/projects/#/measures": "Assessment Finder", "/api/projects/#/plan": "Research plan",
   "/api/projects/#/solution": "Build a solution", "/api/search/papers": "Search: papers", "/api/search/trials": "Search: trials",
   "/api/search/preprints": "Search: preprints", "/api/search/explain": "Study summaries", "/api/projects/#/ask": "Ask",
   "/api/items/#/mission/done": "Plan: task done", "/api/items/#/mission/help": "Plan: guidance", "/api/items/#/mission/swap": "Plan: alternative",
@@ -1437,4 +1441,170 @@ async function userProjects(id) {
       ${p.goal ? `<p class="muted small">${esc(p.goal)}</p>` : ""}</li>`).join("")}</ul></div>`;
   m.onclick = e => { if (e.target === m || e.target.closest("[data-close]") || e.target.closest("a")) m.remove(); };
   document.body.append(m);
+}
+
+
+// ======================= Discover: the connection map =======================
+const DSTATUS = { lead: ["Unexplored link", "Strongly connected through a mechanism, barely studied for this directly"],
+  some: ["Some research", "A modest number of studies already test it"], known: ["Already studied", "Well established for this"],
+  weak: ["No clear link", "Too little research connects it"] };
+const pubmedUrl = (term, asOf) => "https://pubmed.ncbi.nlm.nih.gov/?term=" + encodeURIComponent(asOf ? `(${term}) AND 1800:${asOf}[dp]` : term);
+
+function discoverTab(pane, pid, p, auto) {
+  const years = [2020, 2015, 2010, 2005, 2000];
+  runner(pane, {
+    auto, title: "Find unexplored connections",
+    sub: "Describe a problem you want to solve. Medr maps what drives it, which existing approaches act on those drivers, and which links nobody has tested yet.",
+    how: ["Medr names the main drivers of the problem (mechanisms) and existing approaches that act on them, from this field and others.",
+      "It counts real PubMed papers for every link: problem to driver, driver to approach, and approach to problem directly.",
+      "An approach strongly linked to a driver, but almost never studied for the problem itself, is an unexplored link: a lead worth checking, not a proven fact.",
+      "Time machine: pick a past year and Medr only counts papers up to then, then shows what was published after."],
+    examples: [{ goal: "anxiety in young teens" }, { goal: "early detection of Alzheimer's" }, { goal: "burnout in ICU nurses" }, { goal: "depression after a heart attack" }],
+    fields: `<input class="grow" type="text" name="goal" required placeholder="e.g. lower anxiety in young teens" aria-label="Problem to solve">
+      <select name="as_of" aria-label="Time machine" title="Time machine: only count research published up to this year">
+        <option value="">Research up to today</option>${years.map(y => `<option value="${y}">As of ${y} (time machine)</option>`).join("")}</select>`,
+    button: "Map connections", wait: "Naming what drives the problem. This takes about a minute.",
+    stages: ["Finding approaches from this field and others…", "Counting every link in PubMed…", "Cross-checking each driver against each approach…", "Ranking the unexplored links…", "Writing it up in plain words…"],
+    run: f => api(`/api/projects/${pid}/discover`, { json: { goal: f.goal, as_of: f.as_of ? +f.as_of : null } }), kind: "discover", items: p.items,
+    render: discoverRender, bindRun: bindDiscover,
+  });
+}
+
+function discoverRender(i) {
+  const d = i.data, A = d.target, by = s => d.approaches.filter(c => c.status === s);
+  const leads = by("lead"), studied = [...by("some"), ...by("known")], weak = by("weak");
+  const num = (n, term) => `<a class="cnt" href="${pubmedUrl(term, d.as_of)}" target="_blank" rel="noopener" title="Open these papers in PubMed">${fmt(n)}</a>`;
+  const pathLine = c => c.paths.map(pt => {
+    const b = d.mechanisms.find(m => m.name === pt.via) || {};
+    return `<div class="dpath"><span>${esc(A.name)}</span><i>${num(pt.ab, `(${A.query}) AND (${b.query})`)}</i><span>${esc(pt.via)}</span><i>${num(pt.bc, `(${b.query}) AND (${c.query})`)}</i><span>${esc(c.name)}</span></div>`; }).join("");
+  const check = d.check ? `<section class="tm"><h4>Time machine check</h4>
+      <p>Using only research up to <b>${d.as_of}</b>, Medr flagged <b>${d.check.flagged}</b> unexplored link${d.check.flagged === 1 ? "" : "s"}.
+      <b>${d.check.grew}</b> of them ${d.check.grew === 1 ? "has" : "have"} since drawn ${d.thresholds.moderate}+ new papers.</p>
+      ${d.check.examples.length ? `<ul>${d.check.examples.map(x => `<li><span>${esc(x.name)}</span><span class="num">${fmt(x.before)} paper${x.before === 1 ? "" : "s"} by ${d.as_of} → ${fmt(x.after)} since</span></li>`).join("")}</ul>` : ""}
+      <p class="muted small">The AI that suggests candidates has read recent research, so treat this as a sanity check, not proof. The paper counts themselves are real.</p></section>` : "";
+  return `<div class="disc">
+    ${d.summary ? `<div class="md">${md(d.summary)}</div>` : ""}
+    ${check}
+    <div class="dmap-wrap"><div class="dmap-key"><span><i class="k lead"></i>Unexplored link</span><span><i class="k some"></i>Some research</span><span><i class="k known"></i>Already studied</span><span><i class="k weak"></i>No clear link</span>
+      <span class="muted">Thicker line = more papers. Click a name to trace it.</span></div>${discoverMap(d)}</div>
+    <h4 class="dh">Unexplored links <span class="muted">${leads.length}</span></h4>
+    ${leads.length ? leads.map(c => `<article class="dlead" data-node="c:${esc(c.name)}">
+        <div class="dlead-h"><b>${esc(c.name)}</b><span class="muted small">${esc(c.kind || "")}</span><span class="grow"></span>
+          <span class="dpot" title="Lead strength: how strongly it connects through a mechanism versus how little it's been studied directly"><span>Lead strength</span><span class="pot-bar"><i style="width:${c.potential}%"></i></span></span></div>
+        ${c.why ? `<p>${esc(c.why)}</p>` : `<p>${esc(c.plain || "")}</p>`}
+        ${pathLine(c)}
+        <p class="dnote">Only ${num(c.ac, `(${A.query}) AND (${c.query})`)} paper${c.ac === 1 ? "" : "s"} study it for ${esc(A.name.toLowerCase())} directly${d.as_of && c.after != null ? `, and ${fmt(c.after)} more have appeared since ${d.as_of}` : ""}.</p>
+        ${c.test || c.caution ? `<details class="howit"><summary>How to check it</summary>${c.test ? `<p><b>First study:</b> ${esc(c.test)}</p>` : ""}${c.caution ? `<p><b>Why it might not work:</b> ${esc(c.caution)}</p>` : ""}</details>` : ""}
+      </article>`).join("") : `<p class="muted">No unexplored links this time. The approaches Medr found are either already studied or too weakly connected. Try a narrower problem.</p>`}
+    ${studied.length ? `<h4 class="dh">Already being studied <span class="muted">${studied.length}</span></h4>
+      <table class="dtab"><tbody>${studied.map(c => `<tr data-node="c:${esc(c.name)}"><td><b>${esc(c.name)}</b> <span class="muted small">${esc(c.kind || "")}</span></td>
+        <td>${DSTATUS[c.status][0]}</td><td class="num">${num(c.ac, `(${A.query}) AND (${c.query})`)} papers</td></tr>`).join("")}</tbody></table>` : ""}
+    ${weak.length ? `<details class="howit"><summary>No clear link (${weak.length})</summary><p class="muted small">${weak.map(c => esc(c.name)).join(", ")}. Too few papers connect these to ${esc(A.name.toLowerCase())} or its drivers.</p></details>` : ""}
+    <details class="howit"><summary>How to read this</summary><p>Each number is a real count of PubMed papers that mention both things. Click any number to open those papers.
+      A link counts as strong at ${d.thresholds.strong}+ papers, moderate at ${d.thresholds.moderate}+. An unexplored link is an approach with a moderate or strong path through a driver, but fewer than ${d.thresholds.moderate} papers testing it for the problem directly.
+      Co-mention is not proof: it shows where research is and isn't, so you know where to look.</p></details>
+  </div>`;
+}
+
+function discoverMap(d) {
+  const mechs = d.mechanisms, apprs = d.approaches, A = d.target, row = 46, top = 30;
+  const H = Math.max(mechs.length, apprs.length) * row + top + 10, W = 1000;
+  const yB = k => top + k * row + (Math.max(0, apprs.length - mechs.length) * row) / 2, yC = k => top + k * row + (Math.max(0, mechs.length - apprs.length) * row) / 2;
+  const yA = H / 2, wid = n => Math.max(1, Math.min(7, Math.log10(n + 1) * 2.2));
+  const cut = (t, n) => t.length > n ? t.slice(0, n - 1) + "…" : t;
+  const bIdx = Object.fromEntries(mechs.map((b, k) => [b.name, k])), cIdx = Object.fromEntries(apprs.map((c, k) => [c.name, k]));
+  const leadPairs = new Set(apprs.filter(c => c.status === "lead").flatMap(c => c.paths.map(pt => pt.via + "|" + c.name)));
+  const edgesAB = mechs.map((b, k) => `<path class="e ab" data-b="${esc(b.name)}" d="M210 ${yA} C 320 ${yA}, 300 ${yB(k)}, 400 ${yB(k)}" stroke-width="${wid(b.ab)}"/>`).join("");
+  const edgesBC = d.links.filter(l => l.n >= d.thresholds.moderate && bIdx[l.b] != null && cIdx[l.c] != null).map(l =>
+    `<path class="e bc ${leadPairs.has(l.b + "|" + l.c) ? "hot" : ""}" data-b="${esc(l.b)}" data-c="${esc(l.c)}" d="M600 ${yB(bIdx[l.b])} C 690 ${yB(bIdx[l.b])}, 680 ${yC(cIdx[l.c])}, 770 ${yC(cIdx[l.c])}" stroke-width="${wid(l.n)}"/>`).join("");
+  return `<svg class="dmap" viewBox="0 0 ${W} ${H}" role="img" aria-label="Connection map: ${esc(A.name)}, its drivers and approaches">
+    <g class="edges">${edgesAB}${edgesBC}</g>
+    <g class="node a" data-node="a"><rect x="10" y="${yA - 26}" width="200" height="52" rx="8"/><text x="110" y="${yA - 3}" text-anchor="middle" class="nt">${esc(cut(A.name, 26))}</text>
+      ${A.n != null ? `<text x="110" y="${yA + 15}" text-anchor="middle" class="ns">${fmt(A.n)} papers</text>` : ""}</g>
+    ${mechs.map((b, k) => `<g class="node b" data-node="b:${esc(b.name)}"><title>${esc(b.plain || b.name)} (${fmt(b.ab)} papers link it to ${esc(A.name)})</title>
+      <rect x="400" y="${yB(k) - 17}" width="200" height="34" rx="6"/><text x="500" y="${yB(k) + 5}" text-anchor="middle" class="nt">${esc(cut(b.name, 26))}</text></g>`).join("")}
+    ${apprs.map((c, k) => `<g class="node c ${c.status}" data-node="c:${esc(c.name)}"><title>${esc(DSTATUS[c.status][0])}: ${fmt(c.ac)} papers study it for ${esc(A.name)} directly</title>
+      <circle cx="782" cy="${yC(k)}" r="6"/><text x="796" y="${yC(k) + 5}" class="nt">${esc(cut(c.name, 24))}</text></g>`).join("")}
+  </svg>`;
+}
+
+function bindDiscover(runs) {
+  $$(".disc", runs).forEach(root => {
+    const svg = $(".dmap", root); if (!svg) return;
+    const focus = key => {
+      svg.classList.toggle("focus", !!key);
+      $$(".node", svg).forEach(n => n.classList.remove("on")); $$(".e", svg).forEach(e => e.classList.remove("on"));
+      if (!key) return;
+      const [kind, name] = [key.slice(0, 1), key.slice(2)];
+      const on = sel => $$(sel, svg).forEach(x => x.classList.add("on"));
+      on(`.node[data-node="${CSS.escape(key)}"]`); on(`.node.a`);
+      if (kind === "b") { on(`.e[data-b="${CSS.escape(name)}"]`); $$(`.e.bc[data-b="${CSS.escape(name)}"]`, svg).forEach(e => on(`.node[data-node="c:${CSS.escape(e.dataset.c)}"]`)); }
+      if (kind === "c") $$(`.e.bc[data-c="${CSS.escape(name)}"]`, svg).forEach(e => { e.classList.add("on"); on(`.e.ab[data-b="${CSS.escape(e.dataset.b)}"]`); on(`.node[data-node="b:${CSS.escape(e.dataset.b)}"]`); });
+      if (kind === "a") { svg.classList.remove("focus"); }
+    };
+    let cur = null;
+    $$(".node", svg).forEach(n => n.onclick = () => { cur = cur === n.dataset.node ? null : n.dataset.node; focus(cur); });
+    $$("[data-node]", root).forEach(el => { if (el.closest(".dmap")) return; el.onmouseenter = () => focus(el.dataset.node); el.onmouseleave = () => focus(cur); });
+  });
+}
+
+
+// ======================= public landing page (hosted, signed out) =======================
+function loggedOut() {
+  const h = location.hash;
+  if (h.startsWith("#/signup")) return authView("up");
+  if (h.startsWith("#/signin")) return authView("in");
+  landingView();
+}
+
+const SAMPLE_MAP = {
+  target: { name: "Anxiety in young teens", n: null, query: "" },
+  mechanisms: ["Sleep disruption", "Rumination", "Stress hormones", "Inflammation", "Gut microbiome"].map((name, k) => ({ name, ab: [2400, 1200, 400, 350, 80][k], query: "" })),
+  approaches: [["Bright light therapy", "lead"], ["Wearable sleep coaching", "lead"], ["Probiotics", "lead"], ["Mindfulness programs", "some"], ["CBT", "known"], ["Blue-light filters", "weak"]]
+    .map(([name, status]) => ({ name, status, ac: 0, paths: [] })),
+  links: [["Sleep disruption", "Bright light therapy", 900], ["Sleep disruption", "Wearable sleep coaching", 300], ["Gut microbiome", "Probiotics", 5000],
+    ["Rumination", "CBT", 1500], ["Rumination", "Mindfulness programs", 700], ["Stress hormones", "Mindfulness programs", 300], ["Inflammation", "Probiotics", 60], ["Sleep disruption", "CBT", 800]]
+    .map(([b, c, n]) => ({ b, c, n })),
+  thresholds: { strong: 100, moderate: 20, weak: 5 },
+};
+SAMPLE_MAP.approaches.forEach(c => { c.paths = SAMPLE_MAP.links.filter(l => l.c === c.name).map(l => ({ via: l.b })); });
+
+function landingView() {
+  app.innerHTML = `<div class="plain landing"><header class="plainbar"><a class="brand" href="#/">${logo}<b>Medr</b></a><div class="grow"></div>
+      <a class="btn link small" href="#/signin">Sign in</a><a class="btn small" href="#/signup">Create account</a></header>
+    <main class="wrap">
+      <section class="l-hero">
+        <div class="l-copy">
+          <h1>Find the links in medical research nobody has tested yet.</h1>
+          <p class="lede">Describe a health problem. Medr maps what drives it, counts the published evidence behind every connection, and shows you the openings: approaches that should work, by the research's own logic, but haven't been tried.</p>
+          <div class="row"><a class="btn" href="#/signup">Create a free account</a><a class="btn link" href="#/signin">I already have one</a></div>
+          ${ME.invite ? `<p class="muted small">Medr is in early testing. You'll need an invite code from Caiden.</p>` : `<p class="muted small">Medr is in early testing.</p>`}
+        </div>
+        <figure class="l-map">${discoverMap(SAMPLE_MAP)}
+          <figcaption>Illustration of a connection map. In the app every line is a real PubMed count you can click through.</figcaption></figure>
+      </section>
+
+      <section class="l-what">
+        <h2>What you can do with it</h2>
+        <div class="l-grid">
+          <div><h3>Find unexplored connections</h3><p>Medr names the drivers of a problem and the existing treatments, devices and digital tools that act on them, then flags the ones strongly connected but barely studied for your problem.</p></div>
+          <div><h3>Check it against the past</h3><p>The time machine runs a map using only research up to an earlier year, then shows which flagged links the field went on to study.</p></div>
+          <div><h3>Choose validated assessments</h3><p>Pick the right questionnaires for a patient group, with how well each is validated, its cutoffs and where it falls short.</p></div>
+          <div><h3>Turn an idea into a plan</h3><p>Put an idea forward. Medr grades it against the evidence, suggests stronger variations and walks you through it one task at a time.</p></div>
+        </div>
+      </section>
+
+      <section class="l-trust">
+        <h2>Built to be checked</h2>
+        <ul>
+          <li><b>Public research only.</b> PubMed, ClinicalTrials.gov and preprints. Medr never asks for patient data.</li>
+          <li><b>Every claim has a source.</b> Counts link to the papers behind them, and findings are graded from strong evidence to original idea.</li>
+          <li><b>Plain language first.</b> Each answer starts in words anyone can follow, then goes technical.</li>
+          <li><b>A research aid, not medical advice.</b> Leads are hypotheses to test, not conclusions.</li>
+        </ul>
+      </section>
+
+      <section class="l-end"><h2>Start with a problem you care about.</h2><a class="btn" href="#/signup">Create a free account</a></section>
+      <footer class="l-foot"><span>Medr by Caiden</span><span class="muted">Early testing, 2026</span></footer>
+    </main></div>`;
 }

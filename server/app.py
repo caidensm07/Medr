@@ -321,7 +321,7 @@ class ItemIn(BaseModel):
     data: dict = {}
 
 
-ITEM_LABEL = {'paper': 'Saved a paper', 'preprint': 'Saved a preprint', 'trial': 'Saved a trial', 'note': 'Wrote a note', 'idea': 'Added an idea to the pipeline', 'ideas': 'Ran Idea Lab', 'plan': 'Wrote a research plan', 'radar': 'Ran Trends', 'bridge': 'Ran Connections', 'gaps': 'Found opportunities', 'brief': 'Wrote an evidence brief', 'digest': "Checked what's new", 'measures': 'Ran Assessment Finder'}
+ITEM_LABEL = {'paper': 'Saved a paper', 'preprint': 'Saved a preprint', 'trial': 'Saved a trial', 'note': 'Wrote a note', 'idea': 'Added an idea to the pipeline', 'ideas': 'Ran Idea Lab', 'plan': 'Wrote a research plan', 'radar': 'Ran Trends', 'bridge': 'Ran Connections', 'gaps': 'Found opportunities', 'brief': 'Wrote an evidence brief', 'digest': "Checked what's new", 'measures': 'Ran Assessment Finder', 'discover': 'Mapped connections'}
 
 
 def save_item(pid, kind, ref, title, data):
@@ -690,6 +690,108 @@ def bridge(pid: int, body: BridgeIn):
     return save_item(pid, "bridge", "", f"Crossover: {a} × {b}",
                      {"md": md, "a": a, "b": b, "counts": counts, "links": links,
                       "sources": sources_list(papers_ab, [], [])})
+
+
+# ---------------- Discover: the connection map ----------------
+class DiscoverIn(BaseModel):
+    goal: str
+    as_of: int | None = None
+
+
+STRONG, MODERATE, WEAK = 100, 20, 5
+
+
+def link_level(n):
+    return "strong" if n >= STRONG else "moderate" if n >= MODERATE else "weak" if n >= WEAK else "none"
+
+
+@app.post("/api/projects/{pid}/discover")
+def discover(pid: int, body: DiscoverIn):
+    need_project(pid)
+    goal = body.goal.strip()
+    if not goal:
+        raise HTTPException(400, "Describe what you want to solve or improve.")
+    this = time.localtime().tm_year
+    as_of = body.as_of if body.as_of and 1960 <= body.as_of < this else None
+    yr = (1800, as_of) if as_of else (None, None)
+    cnt = lambda term: src.pubmed_count(term, *yr)
+
+    m = ai.discover_map(goal)
+    nodes = [m["target"]] + m["mechanisms"] + m["approaches"]
+
+    def fix(node):                        # a query PubMed can't use falls back to the safe search builder
+        q_ = node["query"]
+        if not src.pubmed_count(q_):
+            q_ = smart.usable_query(node["name"])
+        node["query"] = q_
+        node["n"] = cnt(f"({q_})")
+        return node
+    src.pmap(fix, nodes)
+    A = f"({m['target']['query']})"
+    mechs = [x for x in m["mechanisms"] if x["n"] > 0]
+    apprs = [x for x in m["approaches"] if x["n"] > 0]
+
+    ab = src.pmap(lambda b: cnt(f"{A} AND ({b['query']})"), mechs)
+    for b, n in zip(mechs, ab):
+        b["ab"] = n
+    mechs.sort(key=lambda b: b["ab"], reverse=True)
+    top = [b for b in mechs if b["ab"] >= WEAK][:8]          # every real mechanism gets cross-checked
+    pairs = [(b, c) for b in top for c in apprs]
+    jobs = [lambda c=c: cnt(f"{A} AND ({c['query']})") for c in apprs] + \
+           [lambda b=b, c=c: cnt(f"({b['query']}) AND ({c['query']})") for b, c in pairs]
+    if as_of:
+        jobs += [lambda c=c: src.pubmed_count(f"{A} AND ({c['query']})", as_of + 1, this) for c in apprs]
+    got = src.pmap(lambda f: f(), jobs)
+    ac, bc = got[:len(apprs)], got[len(apprs):len(apprs) + len(pairs)]
+    after = got[len(apprs) + len(pairs):] if as_of else [None] * len(apprs)
+
+    links = []                              # mechanism -> approach links worth drawing
+    for (b, c), n in zip(pairs, bc):
+        if n >= WEAK:
+            links.append({"b": b["name"], "c": c["name"], "n": n})
+    out_apprs = []
+    for c, n_ac, n_after in zip(apprs, ac, after):
+        paths = sorted(({"via": b["name"], "ab": b["ab"], "bc": next((l["n"] for l in links if l["b"] == b["name"] and l["c"] == c["name"]), 0)}
+                        for b in top), key=lambda p: min(p["ab"], p["bc"]), reverse=True)
+        paths = [p for p in paths if min(p["ab"], p["bc"]) >= WEAK][:3]
+        best = min(paths[0]["ab"], paths[0]["bc"]) if paths else 0
+        if n_ac >= STRONG:
+            status = "known"
+        elif n_ac >= MODERATE:
+            status = "some"
+        elif best >= MODERATE:
+            status = "lead"
+        else:
+            status = "weak"
+        potential = round(100 * min(1, math.log10(best + 1) / 3) / (1 + n_ac / 8)) if status == "lead" else 0
+        out_apprs.append({**c, "ac": n_ac, "after": n_after, "paths": paths, "status": status, "potential": potential})
+    rank = {"lead": 0, "some": 1, "known": 2, "weak": 3}
+    out_apprs.sort(key=lambda c: (rank[c["status"]], -c["potential"], -c["ac"]))
+
+    leads = [c for c in out_apprs if c["status"] == "lead"][:6]
+    summary = ""
+    try:
+        ex_ = ai.discover_explain(goal, m["target"]["name"], leads, as_of)
+        got_leads = [e for e in ex_.get("leads", []) if isinstance(e, dict)]
+        by = {e.get("name", "").lower(): e for e in got_leads}
+        for k, c in enumerate(leads):
+            e = by.get(c["name"].lower()) or (got_leads[k] if k < len(got_leads) else {})
+            c.update({"why": (e or {}).get("why", ""), "test": (e or {}).get("test", ""), "caution": (e or {}).get("caution", "")})
+        summary = ex_.get("summary", "")
+    except Exception as e:
+        print("discover explain skipped:", e, flush=True)
+
+    check = None
+    if as_of:
+        flagged = [c for c in out_apprs if c["status"] == "lead"]
+        check = {"flagged": len(flagged), "grew": sum(1 for c in flagged if (c["after"] or 0) >= MODERATE),
+                 "examples": [{"name": c["name"], "before": c["ac"], "after": c["after"]} for c in
+                              sorted(flagged, key=lambda c: -(c["after"] or 0))[:5]]}
+    data = {"goal": goal, "as_of": as_of, "target": m["target"], "mechanisms": mechs, "approaches": out_apprs,
+            "links": links, "summary": summary, "check": check,
+            "thresholds": {"strong": STRONG, "moderate": MODERATE, "weak": WEAK}}
+    title = f"Discover: {goal}" + (f" (as of {as_of})" if as_of else "")
+    return save_item(pid, "discover", "", title, data)
 
 
 # ---------------- Idea Lab ----------------

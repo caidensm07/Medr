@@ -851,3 +851,64 @@ for that instrument or that the sources state. Submit using the tool."""
     g_item = obj({"gap": STR, "approach": STR, "grade": {"type": "string", "enum": ["A", "B", "C", "D"]}}, ["gap", "approach"])
     return call_json(SYSTEM, prompt, obj({"summary_md": STR, "measures": {"type": "array", "items": m_item},
                                           "gaps": {"type": "array", "items": g_item}}, ["summary_md", "measures"]), 4500, model=FAST)
+
+
+# ======================= Discover: the connection map =======================
+DISCOVER_RULES = """You map how a health goal connects to the research, so a researcher can spot unexplored links.
+Stay at the level of research hypotheses about EXISTING things: approved or widely used medicines, behavioural and
+psychological therapies, devices and wearables, diagnostics, AI/digital tools, lifestyle factors, care models and policies.
+Never propose new chemical compounds, structures, doses, synthesis or lab protocols.
+Every PubMed query must be simple and broad: 1-4 quoted synonyms joined with OR, each tagged [tiab], optionally one [mh]
+MeSH term. Example: ("sleep deprivation"[tiab] OR "insufficient sleep"[tiab] OR "Sleep Deprivation"[mh]). No AND, no NOT,
+no years. Names must be short (1-4 words) and plain."""
+
+QUERY_ITEM = obj({"name": STR, "plain": STR, "query": STR})
+
+
+def discover_map(goal, n_mech=8, n_appr=10):
+    """The goal (A), the mechanisms that drive it (B) and approaches that could act on it (C)."""
+    prompt = f"""{DISCOVER_RULES}
+
+GOAL: {goal}
+
+1. target: the condition or outcome at the centre of this goal (name, plain = one sentence a non-expert understands,
+   query).
+2. mechanisms: {n_mech} distinct things that drive or worsen the target: biological processes, psychological or
+   behavioural factors, social or environmental factors, biomarkers. Mix types. Each: name, plain (one sentence: what it
+   is and how it links to the target), query.
+3. approaches: {n_appr} existing approaches that could act on those mechanisms. Include about 3 that are already
+   standard or common for the target, and about 7 that are established in OTHER conditions or fields but act on one or
+   more of the mechanisms above (that is where unexplored links hide). Each: name, kind (Medicine | Therapy | Device |
+   Digital / AI | Lifestyle | Diagnostic | Care model), plain (one sentence: what it is), query."""
+    schema = obj({"target": QUERY_ITEM, "mechanisms": {"type": "array", "items": QUERY_ITEM},
+                  "approaches": {"type": "array", "items": obj({"name": STR, "kind": STR, "plain": STR, "query": STR})}})
+    out = call_json(SYSTEM, prompt, schema, 3500, model=FAST)
+    ok = lambda x: isinstance(x, dict) and x.get("name") and x.get("query")
+    return {"target": out.get("target") if ok(out.get("target")) else {"name": goal, "plain": "", "query": goal},
+            "mechanisms": [m for m in out.get("mechanisms", []) if ok(m)][:n_mech],
+            "approaches": [a for a in out.get("approaches", []) if ok(a)][:n_appr]}
+
+
+def discover_explain(goal, target, leads, as_of=None):
+    """Plain-first explanations for the most promising unexplored links, plus a short summary."""
+    when = f"Counts only include papers published up to {as_of}. " if as_of else ""
+    rows = "\n".join(
+        f"- {l['name']} ({l['kind']}): {l['ac']} papers on it with {target}. Paths: "
+        + "; ".join(f"{p['via']} ({p['ab']} papers link {p['via']} to {target}, {p['bc']} link it to {l['name']})" for p in l["paths"])
+        for l in leads)
+    prompt = f"""{DISCOVER_RULES}
+
+GOAL: {goal}
+TARGET: {target}
+{when}These approaches are strongly connected to the target THROUGH a mechanism, but barely studied for the target
+directly. They are publication patterns, not findings.
+{rows}
+
+For each lead (same order, same name): why = 2 sentences. First sentence in plain words a non-expert gets. Second sentence
+names the mechanism path more technically. test = one sentence on the first study that could check it (e.g. a
+retrospective analysis of existing records, a small pilot, a secondary analysis of trial data). caution = one short
+sentence on the main reason it might not work.
+Then summary: 2-3 sentences, plain words, on what the map shows overall. Do not overclaim."""
+    schema = obj({"leads": {"type": "array", "items": obj({"name": STR, "why": STR, "test": STR, "caution": STR})},
+                  "summary": STR})
+    return call_json(SYSTEM, prompt, schema, 2000, model=FAST)
