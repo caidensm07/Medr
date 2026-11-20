@@ -365,13 +365,14 @@ patient group with a different problem, or another field that solved a similar p
     return [a for a in out.get("areas", []) if isinstance(a, dict) and a.get("query")][:n]
 
 
-def idea_generate_all(condition, angle, papers, trials, preprints, adjacent=None, n=6):
+def idea_generate_all(condition, angle, papers, trials, preprints, adjacent=None, n=6, context=""):
     """One call instead of two: map the key targets AND generate ideas that act on them."""
     adj = ("ADJACENT EVIDENCE (related conditions / mechanisms, for borrowing ideas):\n"
            + fmt_sources(adjacent, max_chars=350) + "\n") if adjacent else ""
     prompt = f"""{IDEA_RULES}
 
 THE USER'S IDEA OR CHALLENGE: {condition}
+{("WHERE THIS IDEA CAME FROM (use it; the first idea should build on this evidence path):" + chr(10) + context) if context else ""}
 FOCUS: {ANGLES.get(angle, ANGLES['any'])}
 If this is a specific idea (a way to use something to help someone), your FIRST idea must be the user's own idea,
 sharpened: keep their core intent, make it precise and testable, and title it as theirs. The other ideas are strong
@@ -859,34 +860,81 @@ Stay at the level of research hypotheses about EXISTING things: approved or wide
 psychological therapies, devices and wearables, diagnostics, AI/digital tools, lifestyle factors, care models and policies.
 Never propose new chemical compounds, structures, doses, synthesis or lab protocols.
 Every PubMed query must be simple and broad: 1-4 quoted synonyms joined with OR, each tagged [tiab], optionally one [mh]
-MeSH term. Example: ("sleep deprivation"[tiab] OR "insufficient sleep"[tiab] OR "Sleep Deprivation"[mh]). No AND, no NOT,
-no years. Names must be short (1-4 words) and plain."""
+MeSH term. Example: ("sleep deprivation"[tiab] OR "insufficient sleep"[tiab] OR "Sleep Deprivation"[mh]). No NOT, no
+years, and no AND unless you are told to use it. Names must be short (1-5 words) and plain."""
 
 QUERY_ITEM = obj({"name": STR, "plain": STR, "query": STR})
+APPR_ITEM = obj({"name": STR, "kind": STR, "plain": STR, "acts_on": STR, "query": STR})
 
 
-def discover_map(goal, n_mech=8, n_appr=10):
-    """The goal (A), the mechanisms that drive it (B) and approaches that could act on it (C)."""
+def _with_retry(prompt, schema, key, tokens, minimum=1):
+    """Structured call that must return a non-empty list under `key`; tries twice."""
+    last = {}
+    for _ in range(2):
+        try:
+            out = call_json(SYSTEM, prompt, schema, tokens, model=FAST)
+        except Exception as e:
+            print("discover call failed:", e, flush=True)
+            continue
+        items = [x for x in (out.get(key) or []) if isinstance(x, dict) and x.get("name") and x.get("query")]
+        if len(items) >= minimum:
+            out[key] = items
+            return out
+        last = out
+        print(f"discover: '{key}' came back empty, retrying", flush=True)
+    return last
+
+
+def discover_frame(goal, n_mech=8):
+    """The goal's target (condition + population) and the mechanisms that drive it."""
     prompt = f"""{DISCOVER_RULES}
 
 GOAL: {goal}
 
-1. target: the condition or outcome at the centre of this goal (name, plain = one sentence a non-expert understands,
-   query).
-2. mechanisms: {n_mech} distinct things that drive or worsen the target: biological processes, psychological or
-   behavioural factors, social or environmental factors, biomarkers. Mix types. Each: name, plain (one sentence: what it
-   is and how it links to the target), query.
-3. approaches: {n_appr} existing approaches that could act on those mechanisms. Include about 3 that are already
-   standard or common for the target, and about 7 that are established in OTHER conditions or fields but act on one or
-   more of the mechanisms above (that is where unexplored links hide). Each: name, kind (Medicine | Therapy | Device |
-   Digital / AI | Lifestyle | Diagnostic | Care model), plain (one sentence: what it is), query."""
-    schema = obj({"target": QUERY_ITEM, "mechanisms": {"type": "array", "items": QUERY_ITEM},
-                  "approaches": {"type": "array", "items": obj({"name": STR, "kind": STR, "plain": STR, "query": STR})}})
-    out = call_json(SYSTEM, prompt, schema, 3500, model=FAST)
-    ok = lambda x: isinstance(x, dict) and x.get("name") and x.get("query")
-    return {"target": out.get("target") if ok(out.get("target")) else {"name": goal, "plain": "", "query": goal},
-            "mechanisms": [m for m in out.get("mechanisms", []) if ok(m)][:n_mech],
-            "approaches": [a for a in out.get("approaches", []) if ok(a)][:n_appr]}
+1. target: the condition or outcome at the centre of this goal.
+   name (plain, include the population if the goal names one, e.g. "Glucose control in children and teens"),
+   plain (one sentence a non-expert understands),
+   query (the CONDITION only, no population words),
+   population_query (the population if the goal names one, e.g. children/adolescents/teens/youth; empty string if none).
+2. mechanisms: {n_mech} distinct things that drive or worsen the target in that population: biological, psychological,
+   behavioural, social or environmental factors, or biomarkers. Mix types. Each: name, plain (one sentence), query."""
+    schema = obj({"target": obj({"name": STR, "plain": STR, "query": STR, "population_query": STR}),
+                  "mechanisms": {"type": "array", "items": QUERY_ITEM}})
+    out = _with_retry(prompt, schema, "mechanisms", 3000, minimum=3)
+    t = out.get("target") if isinstance(out.get("target"), dict) and out["target"].get("query") else {"name": goal, "plain": "", "query": goal}
+    return t, (out.get("mechanisms") or [])[:n_mech]
+
+
+def discover_approaches(goal, target, mechanisms, n=12, exclude=(), cross_only=False):
+    """Existing approaches that act on the mechanisms. Follows the user's angle when the goal names a kind of solution."""
+    mech_list = "\n".join(f"- {m['name']}" for m in mechanisms)
+    skip = ("\nDo NOT repeat any of these: " + ", ".join(exclude)) if exclude else ""
+    mix = ("ALL of them must come from OTHER conditions or fields (none that are standard for the target)." if cross_only else
+           "At most 2 may be standard for the target. The rest must be established in OTHER conditions or fields but act on one of"
+           " the mechanisms; that is where unexplored links hide.")
+    prompt = f"""{DISCOVER_RULES}
+
+GOAL: {goal}
+TARGET: {target}
+MECHANISMS:
+{mech_list}
+
+List {n} specific, existing approaches that could act on these mechanisms. {mix}
+If the goal names a kind of solution (for example AI, large language models, wearables, an app, a drug class), make
+most approaches specific uses of that kind, each aimed at one mechanism (e.g. "LLM coaching for carb counting",
+"CGM-based hypoglycaemia prediction"), and write each query as that tool AND its specific use, joined with AND
+inside one pair of brackets, e.g. (("large language model"[tiab] OR "chatbot"[tiab]) AND ("carbohydrate counting"[tiab])).
+Each approach: name (2-5 words), kind (Medicine | Therapy | Device | Digital / AI | Lifestyle | Diagnostic | Care model),
+plain (one sentence: what it is), acts_on (which mechanism above), query.{skip}"""
+    schema = obj({"approaches": {"type": "array", "items": APPR_ITEM}})
+    out = _with_retry(prompt, schema, "approaches", 3500, minimum=3)
+    return (out.get("approaches") or [])[:n]
+
+
+def discover_map(goal, n_mech=8, n_appr=12):
+    t, mechs = discover_frame(goal, n_mech)
+    apprs = discover_approaches(goal, t.get("name", goal), mechs, n_appr) if mechs else []
+    return {"target": t, "mechanisms": mechs, "approaches": apprs}
 
 
 def discover_explain(goal, target, leads, as_of=None):
@@ -912,3 +960,41 @@ Then summary: 2-3 sentences, plain words, on what the map shows overall. Do not 
     schema = obj({"leads": {"type": "array", "items": obj({"name": STR, "why": STR, "test": STR, "caution": STR})},
                   "summary": STR})
     return call_json(SYSTEM, prompt, schema, 2000, model=FAST)
+
+
+def proposal(thread, plan_md, steps):
+    """Step 4, Create: one proposal document from everything gathered along the way."""
+    done = [s for s in steps if s.get("status") == "done"]
+    found = "\n".join(f"- Task: {s.get('title')}. Finding recorded: {s.get('note') or '(no notes)'}" for s in done) or "(no tasks finished yet)"
+    prompt = f"""Write a research proposal that turns this work into something a lab, clinic or company could act on.
+Use ONLY what is below plus well-established general knowledge; cite the [PMID ...] references that appear below.
+Stay at research-proposal level: existing approved or widely used approaches, study designs, measures and outcomes.
+Do NOT give medication doses, synthesis, or lab protocols; say dosing would follow existing approved use under clinician
+oversight. Write plain words first, then technical detail.
+
+WHERE IT CAME FROM (Discover):
+{thread.get("origin_text") or "(started from the user's own idea)"}
+
+THE IDEA (Develop):
+{plan_md}
+
+WHAT WAS FOUND (Plan tasks and the user's own findings):
+{found}
+
+Write markdown with exactly these sections:
+**In short:** (2 sentences a non-expert understands)
+## The idea
+One clear, testable hypothesis.
+## Why it could work
+The evidence path with the real paper counts above, and the Develop grade with its reason.
+## What we found so far
+Summarise the recorded findings honestly. If there are none, say so.
+## Proposed first study
+Design, population, sample-size ballpark, primary outcome, and VALIDATED measures to use (name questionnaires where
+relevant), timeline, and what result would count as success.
+## Risks and open questions
+## Who could run it
+Kinds of partners (clinics, measurement-based care platforms, labs, patient groups) and why.
+## Next three steps
+Numbered, concrete."""
+    return call(SYSTEM, prompt, 3500)

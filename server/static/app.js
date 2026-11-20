@@ -139,6 +139,8 @@ const logo = `<svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-
   <circle cx="20" cy="36" r="5" style="fill:var(--eosin)"/></svg>`;
 // line icons for the tools
 const IC = {
+  more: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>`,
+  install: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7M9 11l3 3 3-3M10 18.5h4"/></svg>`,
   discover: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="12" r="1.6"/><path d="M7.5 12h3M13.4 11l3.4-4.4M13.4 13l3.4 4.4"/></svg>`,
   feedback: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg>`,
   admin: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>`,
@@ -223,9 +225,11 @@ function sidebar(pid, tab, p) {
     </div>
     <nav class="nav">${SECTIONS.map(([k, label, first]) => { const on = sectionOf(tab)?.[0] === k, step = PATH.indexOf(k);
       return `${k === "research" ? `<div class="nav-sep" aria-hidden="true"></div>` : ""}<a class="nav-i ${on ? "on" : ""} ${step >= 0 ? "stepi" : ""}" href="#/p/${pid}/${first}" data-nav="${k}">${step >= 0 ? `<span class="nstep">${step + 1}</span>` : IC[{ home: "overview", research: "search" }[k] || k]}<span class="nl"><span>${label}</span><small>${SECTION_DESC[k]}</small></span>${counts[k] ? `<i class="${k === "news" ? "hot" : ""}">${counts[k]}</i>` : ""}</a>`; }).join("")}
+      <button class="nav-i more-b" id="moreb" aria-label="More">${IC.more}<span class="nl"><span>More</span></span></button>
     </nav>
     <div class="side-foot"><a class="nav-i ${tab === "settings" ? "on" : ""}" href="#/p/${pid}/settings">${IC.settings}<span>Settings</span></a>
       <button class="nav-i" id="themeb"><i class="th-dot" aria-hidden="true"></i><span>Theme</span></button>
+      ${ME.hosted && !isStandalone() ? `<button class="nav-i" id="instb">${IC.install}<span>Install app</span></button>` : ""}
       ${ME.hosted ? `<button class="nav-i" id="fbb">${IC.feedback}<span>Send feedback</span></button>` : ""}
       ${ME.user?.admin ? `<a class="nav-i" href="#/admin">${IC.admin}<span>Admin</span></a>` : ""}
       ${ME.hosted ? hostedFoot() : ""}
@@ -249,6 +253,8 @@ function bindShell(pid, tab) {
   $("#sw-new").onclick = async () => { const id = await newProjectFlow(); if (id) { rememberProject(id); location.hash = `#/p/${id}/overview`; } };
   $("#themeb").onclick = themePicker;
   const fb = $("#fbb"); if (fb) fb.onclick = feedbackDialog;
+  const ib = $("#instb"); if (ib) ib.onclick = installApp;
+  $("#moreb").onclick = () => moreSheet(pid);
 }
 
 // ---------------- router ----------------
@@ -272,6 +278,7 @@ function projectsView(lastPid) {
   const first = !PROJECTS.length;
   const sorted = [...PROJECTS].sort((x, y) => (y.id === lastPid) - (x.id === lastPid));
   app.innerHTML = `<div class="plain"><header class="plainbar"><a class="brand" href="#/">${logo}<b>Medr</b></a><div class="grow"></div>
+      ${ME.hosted && !isStandalone() ? `<button class="btn link small" id="instb2">Install app</button>` : ""}
       ${ME.hosted ? `<button class="btn link small" id="fbb2">Send feedback</button>${ME.user?.admin ? `<a class="btn link small" href="#/admin">Admin</a>` : ""}<button class="btn link small" id="out2">Sign out</button>` : ""}
       <button class="btn ghost small" id="themeb2">Theme</button></header>
     <div class="wrap home-wrap">
@@ -301,7 +308,7 @@ function projectsView(lastPid) {
       <p class="restore">Have a backup file? <label class="btn link small"><input type="file" id="rf" accept=".json" hidden>Restore a project</label></p>
     </div></div>`;
   $("#themeb2").onclick = themePicker;
-  if (ME.hosted) { $("#fbb2").onclick = feedbackDialog; $("#out2").onclick = signOut; }
+  if (ME.hosted) { $("#fbb2").onclick = feedbackDialog; $("#out2").onclick = signOut; const i2 = $("#instb2"); if (i2) i2.onclick = installApp; }
   $$("#np .ex").forEach(b => b.onclick = () => { $("#npn").value = b.dataset.ex; $("#npn").focus(); });
   $$("[data-sx]").forEach(b => b.onclick = () => { $("#sb [name=goal]").value = b.dataset.sx; $("#sb").requestSubmit(); });
   $("#sb").onsubmit = e => { e.preventDefault(); const goal = e.target.goal.value.trim(); if (!goal) return;
@@ -478,11 +485,13 @@ function ideasTab(pane, pid, p, auto) {
         <option value="combination">Combining existing treatments</option><option value="ai">AI and digital tools</option>
         <option value="diagnostics">Diagnostics and early detection</option><option value="prevention">Prevention and lifestyle</option></select>`,
     button: "Develop idea", wait: "Reading the research around your idea, sharpening it, and checking each version against real data. About a minute.",
-    run: f => api(`/api/projects/${pid}/ideas`, { json: f }), kind: "ideas", items: p.items,
+    run: f => api(`/api/projects/${pid}/ideas`, { json: { ...f, origin: auto?.origin || {} } }), kind: "ideas", items: p.items,
     render: i => {
       const d = i.data, st = d.stats || {};
+      const trail = d.origin ? originTrail(d.origin) : "";
       const hasPlan = p.items.some(x => x.kind === "plan" && x.data.run_id === i.id);
-      return `<p class="basis">Based on ${fmt(st.papers)} papers, ${fmt(st.preprints)} preprints and ${fmt(st.trials)} trials${d.targets?.length ? `, around ${d.targets.length} targets: ${d.targets.map(t => esc(t.name)).join(", ")}` : ""}. ${fmt(st.checks)} checks against PubMed and ClinicalTrials.gov.</p>
+      return `${trail}<div class="nextstep"><span class="ns-l">Next step</span><span>Pick the strongest idea below and press <b>Build a solution</b>. Medr moves it to <b>Plan</b> and gives you the first task.</span></div>
+        <p class="basis">Based on ${fmt(st.papers)} papers, ${fmt(st.preprints)} preprints and ${fmt(st.trials)} trials${d.targets?.length ? `, around ${d.targets.length} targets: ${d.targets.map(t => esc(t.name)).join(", ")}` : ""}. ${fmt(st.checks)} checks against PubMed and ClinicalTrials.gov.</p>
         <div class="actionline"><span>Turn the strongest leads into a research plan with a first task.</span>
           ${hasPlan ? `<a class="btn ghost small" href="#/p/${pid}/plans">View plan</a>` : `<button class="btn small" data-plan="${i.id}">Draft research plan</button>`}</div>
         <details class="howit scores"><summary>How the scores work</summary><p><b>Confidence (A to D)</b>: how strongly the evidence suggests it would help. A strong evidence, B promising, C plausible, D original with little research yet.</p>
@@ -494,7 +503,7 @@ function ideasTab(pane, pid, p, auto) {
         toast("Research plan ready"); location.hash = `#/p/${pid}/plans`; }));
       $$("[data-solve]", runs).forEach(b => b.onclick = () => {
         const item = list.find(it => it.id == b.closest(".report").dataset.id), x = item.data.ideas[+b.dataset.solve];
-        buildSolution(b, pid, x, item.data.condition); });
+        buildSolution(b, pid, x, item.data.condition, item.data.origin); });
       $$("[data-short]", runs).forEach(b => b.onclick = async () => {
       const item = list.find(it => it.id == b.closest(".report").dataset.id), x = item.data.ideas[+b.dataset.short];
       await api(`/api/projects/${pid}/shortlist`, { json: { idea: x, condition: item.data.condition } }).catch(e => toast(e.message, true));
@@ -503,9 +512,9 @@ function ideasTab(pane, pid, p, auto) {
   });
 }
 
-function buildSolution(btn, pid, idea, condition) {
+function buildSolution(btn, pid, idea, condition, origin) {
   return busy(btn, "Setting up your first step…", async () => {
-    await api(`/api/projects/${pid}/solution`, { json: { idea, condition } });
+    await api(`/api/projects/${pid}/solution`, { json: { idea, condition, origin: origin || null } });
     toast("Moved to Plans. Task 1 is ready."); location.hash = `#/p/${pid}/plans`;
   });
 }
@@ -569,8 +578,9 @@ function plansTab(pane, pid, p) {
   pane.innerHTML = `<p class="sub" style="margin-top:0">Each plan works through one idea a task at a time. Record your findings and Medr sets the next task.</p>
     ${plans.length ? plans.map(i => `<article class="report plan" data-id="${i.id}"><header><h3>${esc(i.title)}</h3><span class="when">${ago(i.created)}</span>
       <button class="btn ghost small" data-print="${i.id}">Print / save PDF</button><button class="btn link small" data-del="${i.id}">Delete</button></header>
-      <div class="body">${missionView(i, pid)}
-      <details class="fullplan" ${i.data.mission ? "" : "open"}><summary>The full plan</summary><div class="md">${md(i.data.md)}</div>${sourcesBlock(i.data.sources)}</details></div></article>`).join("")
+      <div class="body">${planTrail(i)}${missionView(i, pid)}
+      <details class="fullplan" ${i.data.mission ? "" : "open"}><summary>The full plan</summary><div class="md">${md(i.data.md)}</div>${sourcesBlock(i.data.sources)}</details>
+      ${createBlock(i)}</div></article>`).join("")
       : `<div class="empty">No plans yet. Run <a href="#/p/${pid}/ideas">Idea Lab</a>, then press <b>Draft research plan</b>.</div>`}`;
   const redraw = async (fn, btn, label) => busy(btn, label, async () => {
     const it = await fn(); const k = p.items.findIndex(x => x.id === it.id); if (k >= 0) p.items[k] = it;
@@ -595,6 +605,12 @@ function plansTab(pane, pid, p) {
     $$("[data-reset]", pane).forEach(b => b.onclick = () => redraw(() => api(`/api/items/${b.dataset.reset}/mission/reset`, { method: "POST" }), b, "Resetting…"));
     $$("[data-note]", pane).forEach(t => t.oninput = () => { const id = t.closest(".mission").dataset.id;
       try { localStorage.setItem("medr_note_" + id, t.value); } catch (e) {} });
+    $$("[data-prop]", pane).forEach(b => b.onclick = () => busy(b, "Writing the proposal… about a minute", async () => {
+      const it = await api(`/api/items/${b.dataset.prop}/proposal`, { method: "POST" }); const k = p.items.findIndex(x => x.id === it.id); if (k >= 0) p.items[k] = it;
+      const art = $(`.report[data-id="${it.id}"]`, pane); art.querySelector(".create").outerHTML = createBlock(it); art.querySelector(".thread").outerHTML = planTrail(it); bind();
+      art.querySelector(".create").scrollIntoView({ behavior: "smooth", block: "start" }); toast("Proposal ready"); }));
+    $$("[data-propprint]", pane).forEach(b => b.onclick = () => { const art = b.closest(".report"); art.classList.add("printing", "print-prop"); document.body.classList.add("printing");
+      setTimeout(() => { print(); art.classList.remove("printing", "print-prop"); document.body.classList.remove("printing"); }, 50); });
     $$("[data-note]", pane).forEach(t => { if (!t.value) try { t.value = localStorage.getItem("medr_note_" + t.closest(".mission").dataset.id) || ""; } catch (e) {} });
   };
   bind();
@@ -981,10 +997,13 @@ function overviewTab(pane, pid, p) {
   const status = {
     discover: map ? `Last map: <a href="#/p/${pid}/discover">${esc(map.data.goal)}</a>, ${leads.length} unexplored link${leads.length === 1 ? "" : "s"}${leads[0] ? `, led by <b>${esc(leads[0].name)}</b>` : ""}.` : "Not started.",
     ideas: runs.length || kept.length ? `${runs.length} idea check${runs.length === 1 ? "" : "s"} run, ${kept.length} idea${kept.length === 1 ? "" : "s"} in your <a href="#/p/${pid}/board">pipeline</a>.` : "Not started. Bring a lead from Discover, or your own idea.",
+    create: (() => { const pr = items.filter(i => i.kind === "plan" && i.data.proposal); return pr.length ? `${pr.length} proposal${pr.length === 1 ? "" : "s"} written. Latest: <a href="#/p/${pid}/plans"><b>${esc(pr[0].title)}</b></a>.` : "No proposal yet. It's written from everything you gathered in steps 1 to 3."; })(),
     plans: cur ? `Current task: <a href="#/p/${pid}/plans"><b>${esc(cur.title)}</b></a>${cur.time ? `, about ${esc(cur.time)}` : ""}.` : "No plan yet. In Develop, choose Build a solution on an idea.",
   };
-  const step = (k, n, title, what, input) => `<li class="pstep ps-${k}"><span class="pnum">${n}</span><div class="pbody">
-      <h3>${title}</h3><p class="pwhat">${what}</p>${input || ""}<p class="pstat">${status[k]}</p></div></li>`;
+  const done = { discover: !!map, ideas: !!(runs.length || kept.length), plans: !!cur };
+  const nextK = ["discover", "ideas", "plans"].find(k => !done[k]);
+  const step = (k, n, title, what, input) => `<li class="pstep ps-${k} ${k === nextK ? "is-next" : ""} ${done[k] ? "is-done" : ""}"><span class="pnum">${done[k] ? "✓" : n}</span><div class="pbody">
+      <h3>${title}${k === nextK ? ` <span class="nexttag">Next</span>` : ""}</h3><p class="pwhat">${what}</p>${input || ""}<p class="pstat">${status[k]}</p></div></li>`;
   pane.innerHTML = `
     <div class="goalline"><span class="muted">Goal:</span> ${esc(p.goal) || `<span class="muted">not set yet</span>`} <a class="btn link small" href="#/p/${pid}/settings">Edit</a></div>
     <h2 class="tasks-h">The path to a breakthrough</h2>
@@ -995,6 +1014,8 @@ function overviewTab(pane, pid, p) {
         `<form class="row pform" data-go="ideas"><input class="grow" type="text" name="q" required placeholder="Your idea, e.g. bright light therapy for teen anxiety" aria-label="Idea to develop"><button class="btn small">Check idea</button></form>`)}
       ${step("plans", 3, "Plan", "Turn your best idea into a plan. Medr gives you one task at a time, with how to do it and when it's done.",
         `<div class="row"><a class="btn small ${cur ? "" : "ghost"}" href="#/p/${pid}/plans">${cur ? "Open current task" : "Open plans"}</a></div>`)}
+      ${step("create", 4, "Create", "Turn the whole thread into one proposal: the evidence path, your findings, a first study with validated measures, risks and who could run it. Ready to share or print.",
+        plan ? `<div class="row"><a class="btn small ghost" href="#/p/${pid}/plans">Open the proposal</a></div>` : "")}
     </ol>
     <h2 class="tasks-h">Other tools</h2>
     <ul class="otools">
@@ -1488,8 +1509,10 @@ function discoverRender(i) {
       ${d.check.examples.length ? `<ul>${d.check.examples.map(x => `<li><span>${esc(x.name)}</span><span class="num">${fmt(x.before)} paper${x.before === 1 ? "" : "s"} by ${d.as_of} → ${fmt(x.after)} since</span></li>`).join("")}</ul>` : ""}
       <p class="muted small">The AI that suggests candidates has read recent research, so treat this as a sanity check, not proof. The paper counts themselves are real.</p></section>` : "";
   return `<div class="disc">
+    ${leads.length ? `<div class="nextstep"><span class="ns-l">Next step</span><span>Choose the unexplored link that interests you most and press <b>Develop this idea</b>. Medr checks it against the evidence and grades it.</span></div>` : ""}
     ${d.summary ? `<div class="md">${md(d.summary)}</div>` : ""}
     ${check}
+    <button type="button" class="btn ghost small dmap-show" onclick="this.nextElementSibling.classList.toggle('open');this.textContent=this.nextElementSibling.classList.contains('open')?'Hide the map':'Show the map'">Show the map</button>
     <div class="dmap-wrap"><div class="dmap-key"><span><i class="k lead"></i>Unexplored link</span><span><i class="k some"></i>Some research</span><span><i class="k known"></i>Already studied</span><span><i class="k weak"></i>No clear link</span>
       <span class="muted">Thicker line = more papers. Click a name to trace it.</span></div>${discoverMap(d)}</div>
     <h4 class="dh">Unexplored links <span class="muted">${leads.length}</span></h4>
@@ -1499,7 +1522,7 @@ function discoverRender(i) {
         ${c.why ? `<p>${esc(c.why)}</p>` : `<p>${esc(c.plain || "")}</p>`}
         ${pathLine(c)}
         <p class="dnote">Only ${num(c.ac, `(${A.query}) AND (${c.query})`)} paper${c.ac === 1 ? "" : "s"} study it for ${esc(A.name.toLowerCase())} directly${d.as_of && c.after != null ? `, and ${fmt(c.after)} more have appeared since ${d.as_of}` : ""}.</p>
-        <div class="row dact"><a class="btn small" href="#/p/${PID_NOW}/ideas?run=${encodeURIComponent(JSON.stringify({ condition: `${c.name} for ${A.name.toLowerCase()}${c.paths[0] ? `, by acting on ${c.paths[0].via.toLowerCase()}` : ""}`, angle: "any" }))}">Develop this idea</a></div>
+        <div class="row dact"><a class="btn small" href="#/p/${PID_NOW}/ideas?run=${encodeURIComponent(JSON.stringify({ condition: `${c.name} for ${A.name.toLowerCase()}${c.paths[0] ? `, by acting on ${c.paths[0].via.toLowerCase()}` : ""}`, angle: "any", origin: { map: i.id, lead: c.name } }))}">Develop this idea</a></div>
         ${c.test || c.caution ? `<details class="howit"><summary>How to check it</summary>${c.test ? `<p><b>First study:</b> ${esc(c.test)}</p>` : ""}${c.caution ? `<p><b>Why it might not work:</b> ${esc(c.caution)}</p>` : ""}</details>` : ""}
       </article>`).join("") : `<p class="muted">No unexplored links this time. The approaches Medr found are either already studied or too weakly connected. Try a narrower problem.</p>`}
     ${studied.length ? `<details class="howit dstud"><summary>Already being studied (${studied.length})</summary>
@@ -1612,4 +1635,75 @@ function landingView() {
       <section class="l-end"><h2>Start with a problem you care about.</h2><a class="btn" href="#/signup">Create a free account</a></section>
       <footer class="l-foot"><span>Medr by Caiden</span><span class="muted">Early testing, 2026</span></footer>
     </main></div>`;
+}
+
+
+// ======================= installable app (PWA) =======================
+let INSTALL_EVT = null;
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); INSTALL_EVT = e; });
+window.addEventListener("appinstalled", () => { INSTALL_EVT = null; toast("Medr is installed"); $$("#instb, #instb2").forEach(b => b.remove()); });
+function isStandalone() { return matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; }
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1"))
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+
+async function installApp() {
+  if (INSTALL_EVT) { INSTALL_EVT.prompt(); await INSTALL_EVT.userChoice.catch(() => {}); INSTALL_EVT = null; return; }
+  const ua = navigator.userAgent, ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const steps = ios ? ["Open Medr in <b>Safari</b>.", "Tap the <b>Share</b> button (the square with an arrow).", "Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>."]
+    : /Android/.test(ua) ? ["Open Medr in <b>Chrome</b>.", "Tap the <b>⋮</b> menu at the top right.", "Tap <b>Install app</b> or <b>Add to Home screen</b>."]
+    : ["Open Medr in <b>Chrome</b> or <b>Edge</b>.", "Click the <b>install</b> icon at the right end of the address bar, or open the browser menu and choose <b>Install Medr</b>.", "Medr opens in its own window and gets an icon like any other app."];
+  const m = document.createElement("div"); m.className = "modal";
+  m.innerHTML = `<div class="panel inst"><div class="row"><h2 class="grow" style="margin:0">Install Medr</h2><button class="btn link small" data-close>Close</button></div>
+    <p class="hint" style="margin:6px 0 14px">Medr gets its own icon and opens full screen, like a regular app. Updates arrive by themselves.</p>
+    <ol>${steps.map(x => `<li>${x}</li>`).join("")}</ol></div>`;
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-close]")) m.remove(); };
+  document.body.append(m);
+}
+
+
+function moreSheet(pid) {
+  const m = document.createElement("div"); m.className = "modal sheet";
+  const link = (href, label, desc) => `<a class="sheet-i" href="${href}"><b>${label}</b><span>${desc}</span></a>`;
+  m.innerHTML = `<div class="panel"><div class="row"><h2 class="grow" style="margin:0">More</h2><button class="btn link small" data-close>Close</button></div>
+    ${link(`#/p/${pid}/saved`, "Saved", "Papers, trials and notes you kept")}
+    ${link(`#/p/${pid}/news`, "News and alerts", "What's new in your field")}
+    ${link(`#/p/${pid}/settings`, "Project settings", "Goal, backup, delete")}
+    ${link("#/", "All projects", "Switch or start a project")}
+    ${ME.user?.admin ? link("#/admin", "Admin", "Testers, usage and feedback") : ""}
+    <div class="sheet-row"><button class="btn ghost small" data-act="theme">Theme</button>
+      ${ME.hosted ? `<button class="btn ghost small" data-act="fb">Send feedback</button>` : ""}
+      ${ME.hosted && !isStandalone() ? `<button class="btn ghost small" data-act="inst">Install app</button>` : ""}</div></div>`;
+  m.onclick = e => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (e.target === m || e.target.closest("[data-close]") || e.target.closest("a") || act) m.remove();
+    if (act === "theme") themePicker(); if (act === "fb") feedbackDialog(); if (act === "inst") installApp();
+  };
+  document.body.append(m);
+}
+
+
+// ======================= the thread: Discover -> Develop -> Plan -> Create =======================
+function originTrail(o) {
+  if (!o) return "";
+  const pth = (o.paths || [])[0];
+  return `<div class="trail"><span class="tr-l">From Discover</span><span><b>${esc(o.lead)}</b> for ${esc((o.target || "").toLowerCase())}${pth ? `, connected through <b>${esc(pth.via)}</b> (${fmt(pth.ab)} and ${fmt(pth.bc)} papers)` : ""}, with only ${fmt(o.ac)} paper${o.ac === 1 ? "" : "s"} testing it directly.</span></div>`;
+}
+function planTrail(i) {
+  const d = i.data, o = d.origin, idea = d.idea || {}, steps = d.mission?.steps || [], done = steps.filter(s => s.status === "done").length;
+  const cell = (n, name, body, on) => `<li class="${on ? "on" : ""}"><span class="tn">${n}</span><div><b>${name}</b><span>${body}</span></div></li>`;
+  return `<ol class="thread">
+    ${cell(1, "Discover", o ? `${esc(o.lead)} via ${esc(o.paths?.[0]?.via || "a mechanism")}. Only ${fmt(o.ac)} papers test it directly.` : "Started from your own idea.", !!o)}
+    ${cell(2, "Develop", `${esc(idea.title || d.from_idea || "Your idea")}${idea.grade ? `, graded ${esc(idea.grade)}` : ""}.`, true)}
+    ${cell(3, "Plan", `${done} task${done === 1 ? "" : "s"} done${d.mission?.finished ? ", plan complete" : ""}.`, done > 0)}
+    ${cell(4, "Create", d.proposal ? `Proposal written ${ago(d.proposal.created)}.` : "Not yet. Write the proposal below when you're ready.", !!d.proposal)}
+  </ol>`;
+}
+function createBlock(i) {
+  const pr = i.data.proposal, done = (i.data.mission?.steps || []).filter(s => s.status === "done").length;
+  return `<section class="create" id="create-${i.id}"><div class="cr-h"><span class="tn">4</span><div class="grow"><h4>Create: the proposal</h4>
+      <p class="muted">Medr puts everything from this thread into one document: where the idea came from, the evidence, your findings from each task, a proposed first study with validated measures, risks and who could run it.</p></div></div>
+    ${pr ? `<div class="md proposal">${md(pr.md)}</div><div class="row"><button class="btn ghost small" data-propprint="${i.id}">Print / save PDF</button>
+        <button class="btn link small" data-prop="${i.id}">Rewrite with my latest findings</button></div>`
+      : `<div class="row"><button class="btn small" data-prop="${i.id}">Write the proposal</button><span class="muted small">${done ? `Uses your ${done} finished task${done === 1 ? "" : "s"}.` : "Best after a few tasks, so it can use your findings. You can rewrite it any time."}</span></div>`}
+  </section>`;
 }

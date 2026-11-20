@@ -705,6 +705,16 @@ def link_level(n):
     return "strong" if n >= STRONG else "moderate" if n >= MODERATE else "weak" if n >= WEAK else "none"
 
 
+def link_status(ac, n_a, n_c, best):
+    """Already studied is relative: a small field with 40 papers on it is studied; a giant one isn't."""
+    share = ac / max(1, min(n_a, n_c))
+    if ac >= 300 or (ac >= 50 and share >= 0.05):
+        return "known"
+    if ac >= 30 or (ac >= 10 and share >= 0.02):
+        return "some"
+    return "lead" if best >= MODERATE else "weak"
+
+
 @app.post("/api/projects/{pid}/discover")
 def discover(pid: int, body: DiscoverIn):
     need_project(pid)
@@ -716,62 +726,75 @@ def discover(pid: int, body: DiscoverIn):
     yr = (1800, as_of) if as_of else (None, None)
     cnt = lambda term: src.pubmed_count(term, *yr)
 
-    m = ai.discover_map(goal)
-    nodes = [m["target"]] + m["mechanisms"] + m["approaches"]
-
     def fix(node):                        # a query PubMed can't use falls back to the safe search builder
-        q_ = node["query"]
+        q_ = (node.get("query") or "").strip() or node["name"]
         if not src.pubmed_count(q_):
             q_ = smart.usable_query(node["name"])
         node["query"] = q_
         node["n"] = cnt(f"({q_})")
         return node
-    src.pmap(fix, nodes)
-    A = f"({m['target']['query']})"
-    mechs = [x for x in m["mechanisms"] if x["n"] > 0]
-    apprs = [x for x in m["approaches"] if x["n"] > 0]
 
+    # 1. the target, kept to the population the goal names
+    target, mechs = ai.discover_frame(goal)
+    if not mechs:
+        raise HTTPException(502, "Medr couldn't map this problem just now. Try again, or word it as a condition and a group, e.g. 'anxiety in young teens'.")
+    fix(target)
+    A = f"({target['query']})"
+    pop = (target.get("population_query") or "").strip()
+    if pop and src.pubmed_count(f"{A} AND ({pop})") >= 50:
+        A = f"{A} AND ({pop})"
+        target["n"] = cnt(A)
+    target["query"] = A
+    src.pmap(fix, mechs)
+    mechs = [x for x in mechs if x["n"] > 0]
     ab = src.pmap(lambda b: cnt(f"{A} AND ({b['query']})"), mechs)
     for b, n in zip(mechs, ab):
         b["ab"] = n
     mechs.sort(key=lambda b: b["ab"], reverse=True)
     top = [b for b in mechs if b["ab"] >= WEAK][:8]          # every real mechanism gets cross-checked
-    pairs = [(b, c) for b in top for c in apprs]
-    jobs = [lambda c=c: cnt(f"{A} AND ({c['query']})") for c in apprs] + \
-           [lambda b=b, c=c: cnt(f"({b['query']}) AND ({c['query']})") for b, c in pairs]
-    if as_of:
-        jobs += [lambda c=c: src.pubmed_count(f"{A} AND ({c['query']})", as_of + 1, this) for c in apprs]
-    got = src.pmap(lambda f: f(), jobs)
-    ac, bc = got[:len(apprs)], got[len(apprs):len(apprs) + len(pairs)]
-    after = got[len(apprs) + len(pairs):] if as_of else [None] * len(apprs)
 
-    links = []                              # mechanism -> approach links worth drawing
-    for (b, c), n in zip(pairs, bc):
-        if n >= WEAK:
-            links.append({"b": b["name"], "c": c["name"], "n": n})
-    out_apprs = []
-    for c, n_ac, n_after in zip(apprs, ac, after):
-        paths = sorted(({"via": b["name"], "ab": b["ab"], "bc": next((l["n"] for l in links if l["b"] == b["name"] and l["c"] == c["name"]), 0)}
-                        for b in top), key=lambda p: min(p["ab"], p["bc"]), reverse=True)
-        paths = [p for p in paths if min(p["ab"], p["bc"]) >= WEAK][:3]
-        best = min(paths[0]["ab"], paths[0]["bc"]) if paths else 0
-        if n_ac >= STRONG:
-            status = "known"
-        elif n_ac >= MODERATE:
-            status = "some"
-        elif best >= MODERATE:
-            status = "lead"
-        else:
-            status = "weak"
-        potential = round(100 * min(1, math.log10(best + 1) / 3) / (1 + n_ac / 8)) if status == "lead" else 0
-        out_apprs.append({**c, "ac": n_ac, "after": n_after, "paths": paths, "status": status, "potential": potential})
+    links = []
+
+    def evaluate(apprs):
+        src.pmap(fix, apprs)
+        apprs = [c for c in apprs if c["n"] > 0]
+        pairs = [(b, c) for b in top for c in apprs]
+        jobs = [lambda c=c: cnt(f"{A} AND ({c['query']})") for c in apprs] + \
+               [lambda b=b, c=c: cnt(f"({b['query']}) AND ({c['query']})") for b, c in pairs]
+        if as_of:
+            jobs += [lambda c=c: src.pubmed_count(f"{A} AND ({c['query']})", as_of + 1, this) for c in apprs]
+        got = src.pmap(lambda f: f(), jobs)
+        ac, bc = got[:len(apprs)], got[len(apprs):len(apprs) + len(pairs)]
+        after = got[len(apprs) + len(pairs):] if as_of else [None] * len(apprs)
+        for (b, c), n in zip(pairs, bc):
+            if n >= WEAK:
+                links.append({"b": b["name"], "c": c["name"], "n": n})
+        out = []
+        for c, n_ac, n_after in zip(apprs, ac, after):
+            paths = sorted(({"via": b["name"], "ab": b["ab"], "bc": next((l["n"] for l in links if l["b"] == b["name"] and l["c"] == c["name"]), 0)}
+                            for b in top), key=lambda p: min(p["ab"], p["bc"]), reverse=True)
+            paths = [p for p in paths if min(p["ab"], p["bc"]) >= WEAK][:3]
+            best = min(paths[0]["ab"], paths[0]["bc"]) if paths else 0
+            status = link_status(n_ac, target.get("n") or 0, c["n"], best)
+            potential = round(100 * min(1, math.log10(best + 1) / 3) / (1 + n_ac / 8)) if status == "lead" else 0
+            out.append({**c, "ac": n_ac, "after": n_after, "paths": paths, "status": status, "potential": potential})
+        return out
+
+    out_apprs = evaluate(ai.discover_approaches(goal, target["name"], mechs))
+    if sum(1 for c in out_apprs if c["status"] == "lead") < 3 and top:     # widen: look further afield
+        more = ai.discover_approaches(goal, target["name"], top[:5], n=8, exclude=[c["name"] for c in out_apprs], cross_only=True)
+        out_apprs += evaluate(more)
+    if not out_apprs:
+        raise HTTPException(502, "Medr couldn't find approaches to check just now. Please try again.")
     rank = {"lead": 0, "some": 1, "known": 2, "weak": 3}
     out_apprs.sort(key=lambda c: (rank[c["status"]], -c["potential"], -c["ac"]))
+    shown = {c["name"] for c in out_apprs}
+    links = [l for l in links if l["c"] in shown]
 
     leads = [c for c in out_apprs if c["status"] == "lead"][:6]
     summary = ""
     try:
-        ex_ = ai.discover_explain(goal, m["target"]["name"], leads, as_of)
+        ex_ = ai.discover_explain(goal, target["name"], leads, as_of) if leads else {}
         got_leads = [e for e in ex_.get("leads", []) if isinstance(e, dict)]
         by = {e.get("name", "").lower(): e for e in got_leads}
         for k, c in enumerate(leads):
@@ -787,7 +810,7 @@ def discover(pid: int, body: DiscoverIn):
         check = {"flagged": len(flagged), "grew": sum(1 for c in flagged if (c["after"] or 0) >= MODERATE),
                  "examples": [{"name": c["name"], "before": c["ac"], "after": c["after"]} for c in
                               sorted(flagged, key=lambda c: -(c["after"] or 0))[:5]]}
-    data = {"goal": goal, "as_of": as_of, "target": m["target"], "mechanisms": mechs, "approaches": out_apprs,
+    data = {"goal": goal, "as_of": as_of, "target": target, "mechanisms": mechs, "approaches": out_apprs,
             "links": links, "summary": summary, "check": check,
             "thresholds": {"strong": STRONG, "moderate": MODERATE, "weak": WEAK}}
     title = f"Discover: {goal}" + (f" (as of {as_of})" if as_of else "")
@@ -801,6 +824,27 @@ import math
 class IdeaIn(BaseModel):
     condition: str
     angle: str = "any"
+    origin: dict = {}
+
+
+def resolve_origin(pid, origin):
+    """A Discover lead, looked up from the saved map so its evidence travels with the idea."""
+    if not origin or not origin.get("map"):
+        return None
+    it = q("SELECT * FROM items WHERE id = ? AND project_id = ? AND kind = 'discover'", (int(origin["map"]), pid), one=True)
+    if not it:
+        return None
+    d = json.loads(it["data"] or "{}")
+    c = next((a for a in d.get("approaches", []) if a.get("name") == origin.get("lead")), None)
+    if not c:
+        return None
+    tname = d.get("target", {}).get("name", "")
+    paths = "; ".join(f"{p['via']} ({p['ab']} papers link it to {tname}, {p['bc']} link it to {c['name']})" for p in c.get("paths", []))
+    text = (f"Discover map for '{d.get('goal')}': {c['name']} ({c.get('kind', '')}) is strongly connected to {tname} through "
+            f"{paths or 'a mechanism'}, but only {c.get('ac', 0)} papers study it for {tname} directly. "
+            f"{c.get('why', '')} Suggested first check: {c.get('test', '')} Caution: {c.get('caution', '')}").strip()
+    return {"map": it["id"], "goal": d.get("goal"), "target": tname, "lead": c["name"], "kind": c.get("kind"),
+            "paths": c.get("paths", []), "ac": c.get("ac", 0), "why": c.get("why", ""), "test": c.get("test", ""), "text": text}
 
 
 def cap_grade(g, m):
@@ -831,6 +875,7 @@ def idea_lab(pid: int, body: IdeaIn):
     cond = body.condition.strip()
     if not cond:
         raise HTTPException(400, "Enter a condition")
+    origin = resolve_origin(pid, body.origin)
     step = "starting"
     try:
         # 1. scan the landscape
@@ -864,7 +909,8 @@ def idea_lab(pid: int, body: IdeaIn):
         adjacent = adjacent_all if len(papers) < 12 else adjacent_all[:4]
         # 2+3. map targets and generate hypotheses in one step
         step = "generating ideas"
-        mechs, ideas = ai.idea_generate_all(cond, body.angle, papers, trials, preprints, adjacent=adjacent)
+        mechs, ideas = ai.idea_generate_all(cond, body.angle, papers, trials, preprints, adjacent=adjacent,
+                                            context=(origin or {}).get("text", ""))
         if not mechs:                                             # reason from first principles instead of stopping
             mechs = [{"name": "unmet needs in daily care", "why": "first-principles: where patients and families struggle most",
                       "terms": [cond]}]
@@ -932,7 +978,7 @@ def idea_lab(pid: int, body: IdeaIn):
     return save_item(pid, "ideas", "", f"Idea Lab: {cond}",
                      {"condition": cond, "angle": body.angle, "md": dossier.get("summary_md", ""), "targets": mechs,
                       "read_as": interp.get("meaning", ""), "query": cq,
-                      "ideas": ideas, "stats": stats, "sources": sources_list(papers, trials, preprints)})
+                      "ideas": ideas, "stats": stats, "sources": sources_list(papers, trials, preprints), "origin": origin})
 
 
 class PlanIn(BaseModel):
@@ -1166,6 +1212,7 @@ def shortlist(pid: int, body: ShortlistIn):
 class SolutionIn(BaseModel):
     idea: dict
     condition: str = ""
+    origin: dict | None = None
 
 
 def idea_plan_md(x):
@@ -1197,15 +1244,30 @@ def start_solution(pid: int, body: SolutionIn):
     idea = save_item(pid, "idea", f"{cond}|{x.get('title')}", x.get("title", "Idea"), {**x, "condition": cond})
     ex("UPDATE items SET stage = 'investigating' WHERE project_id = ? AND kind = 'idea' AND ref = ?", (pid, f"{cond}|{x.get('title')}"))
     md = idea_plan_md(x)
+    origin = body.origin if isinstance(body.origin, dict) and body.origin.get("text") else None
+    if origin:                               # the Discover evidence path rides along into every task
+        md += "\n\n## Where this came from\n" + origin["text"]
     out = ai.mission_start(cond, p["goal"], md, x.get("title", "this idea"))
     roadmap = out.get("roadmap") or []
-    data = {"md": md, "condition": cond, "from_idea": x.get("title"), "sources": [],
+    data = {"md": md, "condition": cond, "from_idea": x.get("title"), "sources": [], "origin": origin,
+            "idea": {k: x.get(k) for k in ("title", "plain", "grade", "grade_reason", "type", "intervention", "potential") if x.get(k) is not None},
             "mission": {"lead": out.get("lead") or x.get("title"), "mission": out.get("mission", ""), "roadmap": roadmap,
                         "steps": [new_step(out["step"], roadmap[0] if roadmap else "")], "feedback": "", "finished": False,
                         "started": time.time()}}
     plan = save_item(pid, "plan", "", f"Solution: {x.get('title', 'idea')}", data)
     log(pid, "plan", f"Started building a solution: {x.get('title')}", str(plan["id"]) if plan else "")
     return plan
+
+
+@app.post("/api/items/{iid}/proposal")
+def write_proposal(iid: int):
+    it, d, p, cond = need_plan(iid)
+    steps = (d.get("mission") or {}).get("steps") or []
+    origin = d.get("origin") or {}
+    md = ai.proposal({"origin_text": origin.get("text", "")}, d.get("md", ""), steps)
+    d["proposal"] = {"md": md, "created": time.time(), "tasks_done": sum(1 for s_ in steps if s_.get("status") == "done")}
+    log(it["project_id"], "plan", f"Wrote the proposal: {it['title']}", str(iid))
+    return save_plan(it, d)
 
 
 # ---------------- explain + rank search results ----------------
@@ -1298,6 +1360,16 @@ def export(pid: int):
 
 # ---------------- frontend ----------------
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+
+
+@app.get("/sw.js")
+def service_worker():          # served from the root so it can make the whole site installable
+    return FileResponse(BASE / "static" / "sw.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(BASE / "static" / "manifest.webmanifest", media_type="application/manifest+json")
 
 
 @app.get("/")
