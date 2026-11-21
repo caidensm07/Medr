@@ -19,10 +19,10 @@ def client():
     return _client
 
 
-def call(system, messages, max_tokens=6000):
+def call(system, messages, max_tokens=6000, model=None):
     if isinstance(messages, str):
         messages = [{"role": "user", "content": messages}]
-    with client().messages.stream(model=pick(), max_tokens=max_tokens, system=system, messages=messages) as s:
+    with client().messages.stream(model=pick(model), max_tokens=max_tokens, system=system, messages=messages) as s:
         return s.get_final_text()
 
 
@@ -863,46 +863,79 @@ Every PubMed query must be simple and broad: 1-4 quoted synonyms joined with OR,
 MeSH term. Example: ("sleep deprivation"[tiab] OR "insufficient sleep"[tiab] OR "Sleep Deprivation"[mh]). No NOT, no
 years, and no AND unless you are told to use it. Names must be short (1-5 words) and plain."""
 
-QUERY_ITEM = obj({"name": STR, "plain": STR, "query": STR})
-APPR_ITEM = obj({"name": STR, "kind": STR, "plain": STR, "acts_on": STR, "query": STR})
+TERM_ITEM = obj({"name": STR, "plain": STR, "terms": STR})
+APPR_ITEM = obj({"name": STR, "kind": STR, "plain": STR, "acts_on": STR, "terms": STR, "use": STR})
+TERMS_RULE = """For every item give `terms`: 1-4 plain search synonyms separated by semicolons, no quotes, no brackets,
+no AND/OR (for example: sleep deprivation; insufficient sleep; poor sleep)."""
+
+
+def terms_query(terms):
+    """Plain synonyms -> a PubMed title/abstract query Medr builds itself (no AI-written syntax to break)."""
+    parts = [re.sub(r'[\"()\[\]]', "", t).strip() for t in re.split(r"[;\n|]", terms or "")]
+    parts = [t for t in parts if 2 < len(t) < 80][:4]
+    return "(" + " OR ".join(f'"{t}"[tiab]' for t in parts) + ")" if parts else ""
 
 
 def _with_retry(prompt, schema, key, tokens, minimum=1):
-    """Structured call that must return a non-empty list under `key`; tries twice."""
-    last = {}
-    for _ in range(2):
+    """Structured call that must return a non-empty list under `key`; tries twice and logs what came back."""
+    for attempt in range(2):
         try:
             out = call_json(SYSTEM, prompt, schema, tokens, model=FAST)
         except Exception as e:
             print("discover call failed:", e, flush=True)
             continue
-        items = [x for x in (out.get(key) or []) if isinstance(x, dict) and x.get("name") and x.get("query")]
+        raw = out.get(key)
+        if isinstance(raw, str):                      # last resort: a list sent as broken text
+            try:
+                raw = parse_json(raw)
+            except Exception:
+                raw = []
+        items = [x for x in (raw or []) if isinstance(x, dict) and x.get("name") and (x.get("terms") or x.get("query"))]
         if len(items) >= minimum:
             out[key] = items
             return out
-        last = out
-        print(f"discover: '{key}' came back empty, retrying", flush=True)
-    return last
+        print(f"discover: '{key}' came back empty (try {attempt + 1}). Got: {repr(out)[:400]}", flush=True)
+    return {}
+
+
+def _approaches_text(prompt, n):
+    """Plain-text backup when structured output fails: one approach per line."""
+    txt = call(SYSTEM, prompt + f"""
+
+Answer with exactly {n} lines and nothing else, one approach per line, in this format:
+name | kind | mechanism it acts on | search synonyms separated by semicolons | specific use synonyms (or blank)""", 2000, model=FAST)
+    out = []
+    for line in txt.splitlines():
+        bits = [b.strip(" -*0123456789.") for b in line.split("|")]
+        if len(bits) >= 4 and bits[0] and bits[3]:
+            out.append({"name": bits[0][:60], "kind": bits[1] or "Other", "plain": "", "acts_on": bits[2], "terms": bits[3],
+                        "use": bits[4] if len(bits) > 4 else ""})
+    return out
 
 
 def discover_frame(goal, n_mech=8):
     """The goal's target (condition + population) and the mechanisms that drive it."""
-    prompt = f"""{DISCOVER_RULES}
+    prompt = f"""You map how a health goal connects to the research.
+{TERMS_RULE}
 
 GOAL: {goal}
 
 1. target: the condition or outcome at the centre of this goal.
    name (plain, include the population if the goal names one, e.g. "Glucose control in children and teens"),
-   plain (one sentence a non-expert understands),
-   query (the CONDITION only, no population words),
-   population_query (the population if the goal names one, e.g. children/adolescents/teens/youth; empty string if none).
+   plain (one sentence a non-expert understands), terms (the CONDITION only, no population words),
+   population (synonyms for the population if the goal names one, e.g. children; adolescents; teens; youth. Empty if none).
 2. mechanisms: {n_mech} distinct things that drive or worsen the target in that population: biological, psychological,
-   behavioural, social or environmental factors, or biomarkers. Mix types. Each: name, plain (one sentence), query."""
-    schema = obj({"target": obj({"name": STR, "plain": STR, "query": STR, "population_query": STR}),
-                  "mechanisms": {"type": "array", "items": QUERY_ITEM}})
+   behavioural, social or environmental factors, or biomarkers. Mix types. Each: name (1-4 words), plain (one sentence), terms."""
+    schema = obj({"target": obj({"name": STR, "plain": STR, "terms": STR, "population": STR}),
+                  "mechanisms": {"type": "array", "items": TERM_ITEM}})
     out = _with_retry(prompt, schema, "mechanisms", 3000, minimum=3)
-    t = out.get("target") if isinstance(out.get("target"), dict) and out["target"].get("query") else {"name": goal, "plain": "", "query": goal}
-    return t, (out.get("mechanisms") or [])[:n_mech]
+    t = out.get("target") if isinstance(out.get("target"), dict) else {}
+    target = {"name": t.get("name") or goal, "plain": t.get("plain", ""),
+              "query": terms_query(t.get("terms", "")) or terms_query(goal) or goal,
+              "population_query": terms_query(t.get("population", ""))}
+    mechs = [{"name": m["name"][:60], "plain": m.get("plain", ""), "query": terms_query(m.get("terms", "")) or m.get("query", "")}
+             for m in (out.get("mechanisms") or [])][:n_mech]
+    return target, [m for m in mechs if m["query"]]
 
 
 def discover_approaches(goal, target, mechanisms, n=12, exclude=(), cross_only=False):
@@ -912,23 +945,39 @@ def discover_approaches(goal, target, mechanisms, n=12, exclude=(), cross_only=F
     mix = ("ALL of them must come from OTHER conditions or fields (none that are standard for the target)." if cross_only else
            "At most 2 may be standard for the target. The rest must be established in OTHER conditions or fields but act on one of"
            " the mechanisms; that is where unexplored links hide.")
-    prompt = f"""{DISCOVER_RULES}
+    prompt = f"""You map how a health goal connects to the research, so a researcher can spot unexplored links.
+Only EXISTING things: approved or widely used medicines, therapies, devices, wearables, diagnostics, AI/digital tools,
+lifestyle approaches, care models. Never new compounds, doses, synthesis or lab protocols.
+{TERMS_RULE}
 
 GOAL: {goal}
 TARGET: {target}
 MECHANISMS:
 {mech_list}
 
-List {n} specific, existing approaches that could act on these mechanisms. {mix}
-If the goal names a kind of solution (for example AI, large language models, wearables, an app, a drug class), make
-most approaches specific uses of that kind, each aimed at one mechanism (e.g. "LLM coaching for carb counting",
-"CGM-based hypoglycaemia prediction"), and write each query as that tool AND its specific use, joined with AND
-inside one pair of brackets, e.g. (("large language model"[tiab] OR "chatbot"[tiab]) AND ("carbohydrate counting"[tiab])).
-Each approach: name (2-5 words), kind (Medicine | Therapy | Device | Digital / AI | Lifestyle | Diagnostic | Care model),
-plain (one sentence: what it is), acts_on (which mechanism above), query.{skip}"""
-    schema = obj({"approaches": {"type": "array", "items": APPR_ITEM}})
+List {n} specific approaches that could act on these mechanisms. {mix}
+If the goal names a kind of solution (for example AI, large language models, wearables, an app, a drug class), make most
+approaches specific uses of that kind, each aimed at one mechanism: put the kind of tool in `terms`
+(e.g. large language model; chatbot) and the specific use in `use` (e.g. carbohydrate counting). Otherwise leave `use` empty.
+Each: name (2-5 words), kind (Medicine | Therapy | Device | Digital / AI | Lifestyle | Diagnostic | Care model),
+plain (one sentence: what it is), acts_on (which mechanism above), terms, use.{skip}"""
+    schema = obj({"approaches": {"type": "array", "items": APPR_ITEM}}, )
     out = _with_retry(prompt, schema, "approaches", 3500, minimum=3)
-    return (out.get("approaches") or [])[:n]
+    items = out.get("approaches") or []
+    if len(items) < 3:
+        try:
+            items = _approaches_text(prompt, n)
+            print(f"discover: text backup gave {len(items)} approaches", flush=True)
+        except Exception as e:
+            print("discover text backup failed:", e, flush=True)
+    res = []
+    for c in items[:n]:
+        q1 = terms_query(c.get("terms", "")) or c.get("query", "")
+        q2 = terms_query(c.get("use", ""))
+        if q1:
+            res.append({"name": c["name"][:60], "kind": c.get("kind") or "Other", "plain": c.get("plain", ""),
+                        "acts_on": c.get("acts_on", ""), "query": f"({q1} AND {q2})" if q2 else q1})
+    return res
 
 
 def discover_map(goal, n_mech=8, n_appr=12):
